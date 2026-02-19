@@ -209,7 +209,8 @@ class Reviewer(BaseAgent):
             messages=[{"role": "user", "content": user_message}],
             tools=tools,
             tool_executor=ReviewToolExecutor(),
-            max_iterations=5,
+            max_iterations=300,
+            soft_limit=30,
             conversation_log=self._active_conversation_log,
         )
 

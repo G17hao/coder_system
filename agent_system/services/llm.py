@@ -232,19 +232,23 @@ class LLMService:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
         tool_executor: Any,
-        max_iterations: int = 10,
+        max_iterations: int = 300,
+        soft_limit: int = 30,
         conversation_log: ConversationLog | None = None,
     ) -> LLMResponse:
         """带工具调用循环的 LLM 调用
 
-        持续调用直到 LLM 不再发起 tool_use 或达到最大迭代次数。
+        持续调用直到 LLM 不再发起 tool_use 或达到硬上限。
+        达到软限制时，注入反思提示让 LLM 自评进度，
+        若 LLM 认为应继续则放行，否则中断。
 
         Args:
             system_prompt: 系统提示词
             messages: 初始消息列表
             tools: 工具定义
             tool_executor: 工具执行器，需要有 execute(name, input) -> str 方法
-            max_iterations: 最大迭代次数
+            max_iterations: 硬上限迭代次数（默认 300）
+            soft_limit: 软限制轮次，达到时触发反思检查（默认 30）
             conversation_log: 可选的对话日志记录器
 
         Returns:
@@ -252,6 +256,7 @@ class LLMService:
         """
         current_messages = list(messages)
         final_response: LLMResponse | None = None
+        reflection_done = False
 
         # 初始化对话日志
         if conversation_log is not None:
@@ -261,6 +266,51 @@ class LLMService:
                     conversation_log.add_user(msg.get("content", ""))
 
         for iteration in range(max_iterations):
+            # 软限制反思检查：达到 soft_limit 时注入反思提示
+            if iteration == soft_limit and not reflection_done:
+                reflection_done = True
+                logger.warning(
+                    f"    [LLM] 已达软限制 ({soft_limit} 轮)，注入反思检查..."
+                )
+                reflection_prompt = (
+                    f"[系统提醒] 你已经进行了 {soft_limit} 轮工具调用。请暂停并反思：\n"
+                    f"1. 你当前的任务进展如何？已完成了哪些部分？\n"
+                    f"2. 是否存在无效循环（反复读同一文件、重复失败的操作）？\n"
+                    f"3. 剩余工作是否可以在合理轮次内完成？\n\n"
+                    f"如果你认为任务正在正常推进且需要继续，请回复 'CONTINUE' 并简述剩余计划。\n"
+                    f"如果你认为任务遇到无法解决的阻碍，请直接输出最终结果（不调用工具）。"
+                )
+                current_messages.append({"role": "user", "content": reflection_prompt})
+                if conversation_log is not None:
+                    conversation_log.add_user(reflection_prompt)
+
+                # 调用 LLM 获取反思结果（不提供工具，强制纯文本回复）
+                reflection_response = self.call(
+                    system_prompt, current_messages, tools=None,
+                    conversation_log=conversation_log,
+                )
+                logger.info(
+                    f"    [LLM] 反思结果: {reflection_response.content[:200]}"
+                )
+
+                # 将反思回复加入消息历史
+                current_messages.append({
+                    "role": "assistant",
+                    "content": reflection_response.content,
+                })
+
+                if "CONTINUE" in reflection_response.content.upper():
+                    logger.info(
+                        f"    [LLM] LLM 确认继续，放行至硬上限 ({max_iterations} 轮)"
+                    )
+                    continue
+                else:
+                    logger.info(
+                        f"    [LLM] LLM 选择停止或输出最终结果"
+                    )
+                    final_response = reflection_response
+                    break
+
             logger.info(f"    [LLM] 第 {iteration + 1}/{max_iterations} 轮对话...")
             logger.info(f"    [LLM] 等待 API 响应中 (timeout={self._timeout}s)...")
             call_start = time.time()
@@ -316,6 +366,12 @@ class LLMService:
                         result=result_str,
                     )
             current_messages.append({"role": "user", "content": tool_results})
+
+        else:
+            # for 循环正常结束 = 达到硬上限
+            logger.error(
+                f"    [LLM] 达到硬上限 ({max_iterations} 轮)，强制中断！"
+            )
 
         logger.info(
             f"    [LLM] 工具循环结束, 累计 tokens: {self._usage.total_input}in/{self._usage.total_output}out"

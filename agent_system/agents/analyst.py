@@ -130,7 +130,8 @@ class Analyst(BaseAgent):
             messages=[{"role": "user", "content": user_message}],
             tools=tools,
             tool_executor=tool_executor,
-            max_iterations=15,
+            max_iterations=300,
+            soft_limit=15,
             conversation_log=kwargs.get("conversation_log"),
         )
 
