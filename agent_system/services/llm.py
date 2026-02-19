@@ -46,7 +46,7 @@ class LLMService:
         max_tokens: int = 8192,
         temperature: float = 0.0,
         base_url: str = "",
-        timeout: float = 180.0,
+        timeout: float = 300.0,
         max_retries: int = 2,
     ) -> None:
         client_kwargs: dict[str, Any] = {
@@ -137,28 +137,34 @@ class LLMService:
         return result
 
     def _call_with_retry(self, **kwargs: Any) -> Any:
-        """带重试和进度日志的 API 调用
+        """带重试和进度日志的流式 API 调用
 
-        超时或临时错误时自动重试，每次等待期间输出进度日志。
+        使用 streaming 模式，超时计时器会在每次收到数据时重置，
+        只有服务器完全停止发送超过 timeout 秒才会超时。
+        超时或临时错误时自动重试。
 
         Returns:
-            Anthropic API 响应对象
+            Anthropic API 响应对象 (Message)
 
         Raises:
             anthropic.APITimeoutError: 所有重试均超时
             anthropic.APIError: 不可重试的 API 错误
         """
         last_error: Exception | None = None
-        max_attempts = self._max_retries + 1  # max_retries 是重试次数，总尝试=重试+1
+        max_attempts = self._max_retries + 1
 
         for attempt in range(1, max_attempts + 1):
             try:
                 start = time.time()
                 logger.info(
                     f"    [LLM] API 调用 (第 {attempt}/{max_attempts} 次, "
-                    f"timeout={self._timeout}s)..."
+                    f"streaming, per-chunk timeout={self._timeout}s)..."
                 )
-                response = self._client.messages.create(**kwargs)
+
+                # 使用 streaming — timeout 变为 per-chunk 读取超时
+                with self._client.messages.stream(**kwargs) as stream:
+                    response = stream.get_final_message()
+
                 elapsed = time.time() - start
                 logger.info(f"    [LLM] API 响应耗时 {elapsed:.1f}s")
                 return response
