@@ -96,8 +96,15 @@ class Orchestrator:
 
         try:
             self._git = GitService(project_root)
-        except GitError:
-            logger.warning("Git 仓库未初始化，跳过 Git 操作")
+            # 自动切换到项目配置指定的分支
+            if hasattr(self._context.project, 'git_branch') and self._context.project.git_branch:
+                target_branch = self._context.project.git_branch
+                current_branch = self._git.current_branch()
+                if current_branch != target_branch:
+                    logger.info(f"切换到分支: {target_branch}")
+                    self._git.create_branch(target_branch)
+        except GitError as e:
+            logger.warning(f"Git 初始化失败: {e}，跳过 Git 操作")
             self._git = None
 
         # 3. 初始化 LLM 和 Agents
