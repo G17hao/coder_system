@@ -74,8 +74,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--budget",
         type=int,
-        default=500_000,
-        help="Token 预算上限",
+        default=0,
+        help="Token 预算上限（0 表示不限制）",
     )
     parser.add_argument(
         "--call-limit",

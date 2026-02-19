@@ -171,7 +171,7 @@ class Orchestrator:
             self._sync_llm_usage()
 
             # 检查 token 预算
-            if self._context.total_tokens_used >= self._config.budget_limit:
+            if self._config.budget_limit > 0 and self._context.total_tokens_used >= self._config.budget_limit:
                 logger.warning(
                     f"Token 预算耗尽 ({self._context.total_tokens_used}/{self._config.budget_limit})，暂停"
                 )
