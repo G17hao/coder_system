@@ -55,6 +55,7 @@ class Orchestrator:
         self._reviewer = reviewer
         self._reflector = reflector
 
+        self._llm: LLMService | None = None
         self._state_store: StateStore | None = None
         self._git: GitService | None = None
         self._file_service: FileService | None = None
@@ -102,6 +103,7 @@ class Orchestrator:
         # 3. 初始化 LLM 和 Agents
         if self._planner is None:
             llm = self._create_llm()
+            self._llm = llm
             self._planner = Planner(llm=llm)
             self._analyst = Analyst(llm=llm)
             self._coder = Coder(llm=llm)
@@ -165,13 +167,25 @@ class Orchestrator:
         while iteration < max_idle:
             iteration += 1
 
-            # 检查预算
+            # 同步 LLM 使用量到 context
+            self._sync_llm_usage()
+
+            # 检查 token 预算
             if self._context.total_tokens_used >= self._config.budget_limit:
                 logger.warning(
                     f"Token 预算耗尽 ({self._context.total_tokens_used}/{self._config.budget_limit})，暂停"
                 )
                 self._save_state()
-                print("Budget exceeded, pausing...")
+                print("Token budget exceeded, pausing...")
+                break
+
+            # 检查 API 调用次数限制
+            if self._config.call_limit > 0 and self._context.total_api_calls >= self._config.call_limit:
+                logger.warning(
+                    f"API 调用次数耗尽 ({self._context.total_api_calls}/{self._config.call_limit})，暂停"
+                )
+                self._save_state()
+                print("API call limit exceeded, pausing...")
                 break
 
             # 获取下一个可执行任务
@@ -227,6 +241,7 @@ class Orchestrator:
                     )
                     self._save_conversation()
                     task.analysis_cache = report
+                    self._sync_llm_usage()
                 else:
                     task.analysis_cache = '{"dry_run": true}'
 
@@ -244,6 +259,7 @@ class Orchestrator:
                     )
                     self._save_conversation()
                     task.coder_output = str(changes.to_dict())
+                    self._sync_llm_usage()
                 else:
                     changes = CodeChanges(files=[])
                     task.coder_output = "{dry_run: true}"
@@ -261,6 +277,7 @@ class Orchestrator:
                         conversation_log=conv_log,
                     )
                     self._save_conversation()
+                    self._sync_llm_usage()
                 else:
                     result = ReviewResult(passed=True)
 
@@ -348,6 +365,14 @@ class Orchestrator:
 
     # --- 内部方法 ---
 
+    def _sync_llm_usage(self) -> None:
+        """将 LLMService 的累计 usage 同步到 AgentContext"""
+        if self._llm is None or self._context is None:
+            return
+        usage = self._llm.usage
+        self._context.total_tokens_used = usage.total
+        self._context.total_api_calls = usage.total_calls
+
     def _create_llm(self) -> LLMService:
         """创建 LLM 服务实例"""
         api_key = self._config.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY", "")
@@ -412,6 +437,7 @@ class Orchestrator:
                 task, self._context, conversation_log=conv_log,
             )
             self._save_conversation()
+            self._sync_llm_usage()
             if self._reflections_dir:
                 save_reflection(report, self._reflections_dir)
         except Exception as e:
@@ -480,6 +506,9 @@ class Orchestrator:
         blocked = sum(1 for t in self._context.task_queue if t.status == TaskStatus.BLOCKED)
         total = len(self._context.task_queue)
 
+        # 同步最终 usage
+        self._sync_llm_usage()
+
         report = (
             f"\n{'='*50}\n"
             f"执行报告\n"
@@ -490,6 +519,7 @@ class Orchestrator:
             f"  [wait] 等待: {pending}\n"
             f"  [block] 阻塞: {blocked}\n"
             f"Token 使用: {self._context.total_tokens_used}\n"
+            f"API 调用: {self._context.total_api_calls}\n"
             f"{'='*50}"
         )
         try:

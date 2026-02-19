@@ -336,3 +336,165 @@ class TestStatusReport:
         assert "done: 1" in report
         assert "pending: 1" in report
         assert "blocked: 1" in report
+
+
+class TestTokenUsageSync:
+    """Token / API 调用次数跟踪测试"""
+
+    def test_token_usage_synced_after_task(self) -> None:
+        """任务执行后 context.total_tokens_used 应被更新"""
+        from agent_system.services.llm import LLMService, TokenUsage
+
+        planner, analyst, coder, reviewer = _make_mock_agents()
+        task = Task(id="T0", title="Test", description="desc")
+        ctx = _make_context([task], dry_run=False)
+
+        orch = Orchestrator(
+            config=ctx.config,
+            planner=planner,
+            analyst=analyst,
+            coder=coder,
+            reviewer=reviewer,
+            context=ctx,
+        )
+        orch._state_store = StateStore(Path(tempfile.mktemp(suffix=".json")))
+        orch._file_service = MagicMock()
+        orch._git = MagicMock()
+        orch._git.has_changes.return_value = False
+
+        # 模拟 LLM 有 token 消耗
+        mock_llm = MagicMock(spec=LLMService)
+        mock_usage = TokenUsage(total_input=1000, total_output=500, total_calls=5)
+        mock_llm.usage = mock_usage
+        orch._llm = mock_llm
+
+        orch.run_single_task(task)
+
+        assert ctx.total_tokens_used == 1500  # 1000 + 500
+        assert ctx.total_api_calls == 5
+
+    def test_call_limit_stops_execution(self) -> None:
+        """当 API 调用次数达到 call_limit 时主循环应停止（不再启动新任务）"""
+        from agent_system.services.llm import LLMService, TokenUsage
+
+        planner, analyst, coder, reviewer = _make_mock_agents()
+        tasks = _make_tasks()
+        config = AgentConfig(
+            dry_run=True,
+            git_auto_commit=False,
+            call_limit=3,
+        )
+        project_config = ProjectConfig(
+            project_name="test",
+            project_description="test",
+            project_root=".",
+            review_commands=[],
+        )
+        ctx = AgentContext(
+            project=project_config,
+            task_queue=tasks,
+            config=config,
+        )
+
+        orch = Orchestrator(
+            config=config,
+            planner=planner,
+            analyst=analyst,
+            coder=coder,
+            reviewer=reviewer,
+            context=ctx,
+        )
+        orch._state_store = StateStore(Path(tempfile.mktemp(suffix=".json")))
+        orch._file_service = MagicMock()
+
+        # 模拟 LLM 已有 3 次调用（恰好达到限制）
+        mock_llm = MagicMock(spec=LLMService)
+        mock_usage = TokenUsage(total_input=100, total_output=50, total_calls=3)
+        mock_llm.usage = mock_usage
+        orch._llm = mock_llm
+
+        orch.run()
+
+        # 预算检查在任务执行前，所以 0 个任务被执行
+        done_count = sum(1 for t in tasks if t.status == TaskStatus.DONE)
+        assert done_count == 0
+        assert ctx.total_api_calls == 3
+
+    def test_budget_limit_stops_execution(self) -> None:
+        """当 token 使用超过 budget_limit 时主循环应停止（不再启动新任务）"""
+        from agent_system.services.llm import LLMService, TokenUsage
+
+        planner, analyst, coder, reviewer = _make_mock_agents()
+        tasks = _make_tasks()
+        config = AgentConfig(
+            dry_run=True,
+            git_auto_commit=False,
+            budget_limit=100,
+        )
+        project_config = ProjectConfig(
+            project_name="test",
+            project_description="test",
+            project_root=".",
+            review_commands=[],
+        )
+        ctx = AgentContext(
+            project=project_config,
+            task_queue=tasks,
+            config=config,
+        )
+
+        orch = Orchestrator(
+            config=config,
+            planner=planner,
+            analyst=analyst,
+            coder=coder,
+            reviewer=reviewer,
+            context=ctx,
+        )
+        orch._state_store = StateStore(Path(tempfile.mktemp(suffix=".json")))
+        orch._file_service = MagicMock()
+
+        # 模拟超出预算（80+50=130 > 100）
+        mock_llm = MagicMock(spec=LLMService)
+        mock_usage = TokenUsage(total_input=80, total_output=50, total_calls=2)
+        mock_llm.usage = mock_usage
+        orch._llm = mock_llm
+
+        orch.run()
+
+        # 预算检查在任务执行前，所以 0 个任务被执行
+        done_count = sum(1 for t in tasks if t.status == TaskStatus.DONE)
+        assert done_count == 0
+        assert ctx.total_tokens_used == 130  # 80 + 50
+
+    def test_report_shows_api_calls(self) -> None:
+        """执行报告显示 API 调用次数"""
+        from agent_system.services.llm import LLMService, TokenUsage
+
+        tasks = _make_tasks()
+        ctx = _make_context(tasks)
+        ctx.total_tokens_used = 12345
+        ctx.total_api_calls = 42
+
+        orch = Orchestrator(
+            config=ctx.config,
+            context=ctx,
+        )
+        # 需要 _llm 以便 _print_report 中的 _sync_llm_usage 不报错
+        mock_llm = MagicMock(spec=LLMService)
+        mock_usage = TokenUsage(total_input=6000, total_output=6345, total_calls=42)
+        mock_llm.usage = mock_usage
+        orch._llm = mock_llm
+
+        report = orch.get_status_report()
+        assert "3" in report  # 3 个任务
+
+    def test_sync_llm_usage_without_llm(self) -> None:
+        """没有 _llm 引用时 _sync_llm_usage 不报错"""
+        tasks = _make_tasks()
+        ctx = _make_context(tasks)
+        orch = Orchestrator(config=ctx.config, context=ctx)
+        # _llm is None
+        orch._sync_llm_usage()  # should not raise
+        assert ctx.total_tokens_used == 0
+        assert ctx.total_api_calls == 0

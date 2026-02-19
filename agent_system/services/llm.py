@@ -30,6 +30,7 @@ class TokenUsage:
     """Token 使用统计"""
     total_input: int = 0
     total_output: int = 0
+    total_calls: int = 0
 
     @property
     def total(self) -> int:
@@ -166,7 +167,8 @@ class LLMService:
                     response = stream.get_final_message()
 
                 elapsed = time.time() - start
-                logger.info(f"    [LLM] API 响应耗时 {elapsed:.1f}s")
+                self._usage.total_calls += 1
+                logger.info(f"    [LLM] API 响应耗时 {elapsed:.1f}s (累计调用 {self._usage.total_calls} 次)")
                 return response
 
             except anthropic.APITimeoutError as e:

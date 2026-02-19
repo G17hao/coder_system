@@ -22,6 +22,7 @@ class AgentConfig:
     dry_run: bool = False
     max_dynamic_tasks: int = 10
     budget_limit: int = 500_000
+    call_limit: int = 0  # API 调用次数上限，0 表示不限制
     llm_timeout: float = 300.0
     llm_max_retries: int = 2
 
@@ -34,3 +35,4 @@ class AgentContext:
     current_task: Task | None = None
     config: AgentConfig = field(default_factory=AgentConfig)
     total_tokens_used: int = 0
+    total_api_calls: int = 0

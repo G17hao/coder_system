@@ -161,3 +161,4 @@ class TestAgentContext:
         assert ctx.completed_tasks == {}
         assert ctx.current_task is None
         assert ctx.total_tokens_used == 0
+        assert ctx.total_api_calls == 0

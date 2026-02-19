@@ -78,6 +78,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Token 预算上限",
     )
     parser.add_argument(
+        "--call-limit",
+        type=int,
+        default=0,
+        help="API 调用次数上限（0 表示不限制），按月订阅可设为每次运行的配额",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="输出详细日志",
@@ -115,6 +121,7 @@ def main(argv: list[str] | None = None) -> int:
         project_config_file=args.project,
         dry_run=args.dry_run,
         budget_limit=args.budget,
+        call_limit=args.call_limit,
     )
 
     # --status: 查看状态
