@@ -1,8 +1,9 @@
-"""Anthropic API 封装 — 含 token 计数、超时、重试"""
+"""Anthropic API 封装 — 含 token 计数、超时、重试、流式输出"""
 
 from __future__ import annotations
 
 import logging
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
@@ -162,8 +163,24 @@ class LLMService:
                     f"streaming, per-chunk timeout={self._timeout}s)..."
                 )
 
-                # 使用 streaming — timeout 变为 per-chunk 读取超时
+                # 使用 streaming — 实时输出文本到控制台
                 with self._client.messages.stream(**kwargs) as stream:
+                    streamed_text = False
+                    for event in stream:
+                        # 逐 chunk 打印文本到控制台（不换行）
+                        if hasattr(event, "type"):
+                            if event.type == "content_block_delta":
+                                delta = event.delta
+                                if hasattr(delta, "text") and delta.text:
+                                    if not streamed_text:
+                                        # 首个文本 chunk: 打印前缀
+                                        sys.stdout.write("\n    [LLM] ")
+                                        streamed_text = True
+                                    sys.stdout.write(delta.text)
+                                    sys.stdout.flush()
+                    if streamed_text:
+                        sys.stdout.write("\n")
+                        sys.stdout.flush()
                     response = stream.get_final_message()
 
                 elapsed = time.time() - start
@@ -325,9 +342,6 @@ class LLMService:
                 f"tokens=+{response.input_tokens}in/+{response.output_tokens}out, "
                 f"耗时={call_elapsed:.1f}s"
             )
-            # 输出 LLM 回复的完整文本内容
-            if response.content:
-                logger.info(f"    [LLM] 回复内容:\n{response.content}")
             final_response = response
 
             if not response.tool_calls:
