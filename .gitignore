@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+*.egg
+.eggs/
+state/tasks.json
+agent-system/state/tasks.json
+logs/*.log
+*.log
+.env

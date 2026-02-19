@@ -1,0 +1,122 @@
+"""Analyst Agent — 代码分析，为 Coder 提供精确规格"""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from agent_system.agents.base import BaseAgent
+from agent_system.models.context import AgentContext
+from agent_system.models.task import Task
+from agent_system.tools.read_file import READ_FILE_TOOL_DEFINITION
+from agent_system.tools.search_file import SEARCH_FILE_TOOL_DEFINITION
+
+
+class AnalystToolExecutor:
+    """Analyst 可用的工具执行器"""
+
+    def execute(self, name: str, tool_input: dict[str, Any]) -> str:
+        """执行工具调用
+
+        Args:
+            name: 工具名称
+            tool_input: 工具参数
+
+        Returns:
+            工具执行结果字符串
+        """
+        if name == "read_file":
+            from agent_system.tools.read_file import read_file_tool
+            try:
+                return read_file_tool(
+                    path=tool_input["path"],
+                    start=tool_input.get("start", 1),
+                    end=tool_input.get("end"),
+                )
+            except FileNotFoundError as e:
+                return f"错误: {e}"
+
+        elif name == "search_file":
+            from agent_system.tools.search_file import search_file_tool
+            results = search_file_tool(
+                base_dir=tool_input["base_dir"],
+                pattern=tool_input.get("pattern", "*"),
+                regex=tool_input.get("regex"),
+            )
+            return json.dumps(results, ensure_ascii=False)
+
+        return f"未知工具: {name}"
+
+
+class Analyst(BaseAgent):
+    """代码分析 Agent
+
+    职责:
+    - 读取参考代码（reference_roots），提取接口、数据结构、事件流
+    - 读取目标项目代码（project_root），识别已有实现和缺口
+    - 输出结构化分析报告
+    """
+
+    def execute(self, task: Task, context: AgentContext, **kwargs: Any) -> str:
+        """执行代码分析
+
+        Args:
+            task: 当前任务
+            context: Agent 上下文
+
+        Returns:
+            结构化分析报告（JSON 字符串）
+        """
+        system_prompt = self._build_system_prompt(context)
+        user_message = self._build_user_message(task, context)
+
+        tools = [READ_FILE_TOOL_DEFINITION, SEARCH_FILE_TOOL_DEFINITION]
+        tool_executor = AnalystToolExecutor()
+
+        response = self._llm.call_with_tools_loop(
+            system_prompt=system_prompt,
+            messages=[{"role": "user", "content": user_message}],
+            tools=tools,
+            tool_executor=tool_executor,
+            max_iterations=10,
+        )
+
+        return response.content
+
+    def _build_system_prompt(self, context: AgentContext) -> str:
+        """构建 Analyst 系统提示词"""
+        template = self._load_prompt_template("analyst.md")
+
+        # 格式化模式映射
+        mappings_text = ""
+        for m in context.project.pattern_mappings:
+            mappings_text += f"- {m.from_pattern} → {m.to_pattern}\n"
+
+        return self._render_template(template, {
+            "projectDescription": context.project.project_description,
+            "patternMappings": mappings_text or "无",
+        })
+
+    def _build_user_message(self, task: Task, context: AgentContext) -> str:
+        """构建用户消息"""
+        reference_roots = "\n".join(
+            f"- {r}" for r in context.project.reference_roots
+        )
+        return (
+            f"## 当前任务\n\n"
+            f"**ID**: {task.id}\n"
+            f"**标题**: {task.title}\n"
+            f"**描述**: {task.description}\n"
+            f"**分类**: {task.category}\n\n"
+            f"## 项目目录\n\n"
+            f"- 目标项目: {context.project.project_root}\n"
+            f"- 参考代码:\n{reference_roots}\n\n"
+            f"## 要求\n\n"
+            f"请使用 read_file 和 search_file 工具分析参考代码和目标项目代码，"
+            f"然后输出结构化分析报告（JSON），包含：\n"
+            f"- interfaces: 需要的接口定义\n"
+            f"- methods: 需要实现的方法签名\n"
+            f"- events: 需要处理的事件\n"
+            f"- files: 需要创建/修改的文件清单\n"
+            f"- gaps: 目标项目中的缺口\n"
+        )

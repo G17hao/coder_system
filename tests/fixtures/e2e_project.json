@@ -1,0 +1,41 @@
+{
+  "project_name": "e2e-test",
+  "project_description": "端到端测试项目",
+  "project_root": ".",
+  "reference_roots": [],
+  "git_branch": "feat/e2e-test",
+  "coding_conventions": "禁止 any 类型",
+  "pattern_mappings": [],
+  "review_checklist": ["无 any 类型"],
+  "review_commands": ["echo ok"],
+  "task_categories": ["infrastructure"],
+  "initial_tasks": [
+    {
+      "id": "T0",
+      "title": "基础任务",
+      "description": "最基础的任务，无依赖",
+      "dependencies": [],
+      "priority": 0,
+      "phase": 0,
+      "category": "infrastructure"
+    },
+    {
+      "id": "T1",
+      "title": "第二个任务",
+      "description": "依赖 T0",
+      "dependencies": ["T0"],
+      "priority": 10,
+      "phase": 1,
+      "category": "infrastructure"
+    },
+    {
+      "id": "T2",
+      "title": "第三个任务",
+      "description": "依赖 T1",
+      "dependencies": ["T1"],
+      "priority": 20,
+      "phase": 2,
+      "category": "infrastructure"
+    }
+  ]
+}

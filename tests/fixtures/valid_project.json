@@ -1,0 +1,34 @@
+{
+  "project_name": "test-project",
+  "project_description": "测试项目描述",
+  "project_root": "/tmp/test-project",
+  "reference_roots": ["/tmp/reference"],
+  "git_branch": "feat/test",
+  "coding_conventions": "禁止 any 类型",
+  "pattern_mappings": [
+    {"from_pattern": "View+Ctrl", "to_pattern": "Component+Service"}
+  ],
+  "review_checklist": ["无 any 类型", "编译通过"],
+  "review_commands": ["echo ok"],
+  "task_categories": ["infrastructure", "model"],
+  "initial_tasks": [
+    {
+      "id": "T0.1",
+      "title": "测试任务1",
+      "description": "测试描述1",
+      "dependencies": [],
+      "priority": 0,
+      "phase": 0,
+      "category": "infrastructure"
+    },
+    {
+      "id": "T1.1",
+      "title": "测试任务2",
+      "description": "测试描述2",
+      "dependencies": ["T0.1"],
+      "priority": 10,
+      "phase": 1,
+      "category": "model"
+    }
+  ]
+}
