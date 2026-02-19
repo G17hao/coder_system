@@ -146,11 +146,13 @@ def list_directory_tool(
     include_files: bool = True,
     ignore_dirs: list[str] | None = None,
     max_entries: int = _DEFAULT_MAX_ENTRIES,
+    respect_gitignore: bool = True,
 ) -> str:
     """列出目录树结构
 
-    自动读取 .gitignore 规则，忽略被 git 排除的目录和文件。
-    当条目数超过 max_entries 时自动截断并提示剩余数量。
+    默认自动读取 .gitignore 规则，忽略被 git 排除的目录和文件。
+    设置 respect_gitignore=False 可关闭过滤，显示所有内容（含被忽略的目录）。
+    当条目数超过 max_entries 时自动截断并提示。
 
     Args:
         path: 目录绝对路径
@@ -158,6 +160,7 @@ def list_directory_tool(
         include_files: 是否包含文件（False 则只显示目录）
         ignore_dirs: 额外忽略的目录名列表
         max_entries: 最大返回条目数（默认 500），超出部分截断
+        respect_gitignore: 是否遵循 .gitignore 规则（默认 True）
 
     Returns:
         缩进格式的目录树字符串
@@ -166,12 +169,12 @@ def list_directory_tool(
     if not root.is_dir():
         return f"目录不存在: {path}"
 
-    skip_dirs = set(_IGNORE_DIRS)
+    skip_dirs = set(_IGNORE_DIRS) if respect_gitignore else set()
     if ignore_dirs:
         skip_dirs.update(ignore_dirs)
 
     # 解析 .gitignore
-    gitignore_patterns = _find_gitignore(root)
+    gitignore_patterns = _find_gitignore(root) if respect_gitignore else []
 
     lines: list[str] = [f"{root.name}/"]
     counter = [0]  # 用列表包装以便在递归中共享可变状态
@@ -258,8 +261,10 @@ LIST_DIRECTORY_TOOL_DEFINITION = {
     "name": "list_directory",
     "description": (
         "列出目录的树形结构，包含子目录和文件。"
-        "自动读取 .gitignore 规则，忽略被 git 排除的文件和目录。"
-        "同时忽略 node_modules/.git 等无关目录。"
+        "默认自动读取 .gitignore 规则并忽略被 git 排除的目录和文件"
+        "（如 node_modules、build、external_assets 等），"
+        "同时忽略 .meta/.pyc 等生成文件。"
+        "如果你需要查看被忽略的目录，设置 respect_gitignore=false 即可关闭过滤。"
         "用于快速了解项目结构，比反复调用 search_file 更高效。"
     ),
     "input_schema": {
@@ -283,6 +288,15 @@ LIST_DIRECTORY_TOOL_DEFINITION = {
                 "type": "integer",
                 "description": "最大返回条目数，默认 500。超出时截断并提示。",
                 "default": 500,
+            },
+            "respect_gitignore": {
+                "type": "boolean",
+                "description": (
+                    "是否遵循 .gitignore 规则过滤目录和文件，默认 true。"
+                    "设为 false 可查看所有内容（包括 node_modules、build 等被忽略的目录），"
+                    "注意关闭后可能返回大量条目，建议同时减小 max_depth。"
+                ),
+                "default": True,
             },
         },
         "required": ["path"],

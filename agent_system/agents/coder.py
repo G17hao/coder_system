@@ -86,6 +86,8 @@ class CoderToolExecutor:
                 base_dir=tool_input["base_dir"],
                 pattern=tool_input.get("pattern", "*"),
                 regex=tool_input.get("regex"),
+                max_results=tool_input.get("max_results", 200),
+                respect_gitignore=tool_input.get("respect_gitignore", True),
             )
             return json.dumps(results, ensure_ascii=False)
 
@@ -121,6 +123,8 @@ class CoderToolExecutor:
                 path=tool_input["path"],
                 max_depth=tool_input.get("max_depth", 3),
                 include_files=tool_input.get("include_files", True),
+                max_entries=tool_input.get("max_entries", 500),
+                respect_gitignore=tool_input.get("respect_gitignore", True),
             )
 
         elif name == "replace_in_file":
