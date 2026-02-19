@@ -1,9 +1,11 @@
-"""内容搜索工具 — 在文件内容中搜索关键字，返回匹配行+行号，支持 .gitignore"""
+"""内容搜索工具 — 在文件内容中搜索关键字，返回匹配行+行号，支持 git ls-files 加速"""
 
 from __future__ import annotations
 
 import fnmatch
+import logging
 import re
+import time
 from pathlib import Path
 
 from agent_system.tools.list_directory import (
@@ -12,6 +14,9 @@ from agent_system.tools.list_directory import (
     _find_gitignore,
     _is_gitignored,
 )
+from agent_system.tools.search_file import _find_git_root, _search_via_git
+
+logger = logging.getLogger(__name__)
 
 
 def grep_content_tool(
@@ -59,7 +64,7 @@ def grep_dir_tool(
 ) -> list[dict[str, str | int]]:
     """在目录下所有匹配文件中搜索内容
 
-    自动遵循 .gitignore 规则跳过被忽略的目录。
+    优先使用 git ls-files 获取文件列表（快速），回退到文件系统遍历。
 
     Args:
         base_dir: 搜索根目录
@@ -71,6 +76,7 @@ def grep_dir_tool(
     Returns:
         匹配结果列表 [{"file": 文件路径, "line": 行号, "content": 行内容}]
     """
+    start = time.time()
     base = Path(base_dir)
     if not base.is_dir():
         return [{"file": "", "line": 0, "content": f"目录不存在: {base_dir}"}]
@@ -78,6 +84,34 @@ def grep_dir_tool(
     compiled = re.compile(pattern, re.IGNORECASE)
     matches: list[dict[str, str | int]] = []
 
+    # 快速路径: 用 git ls-files 获取文件列表，然后逐文件 grep
+    if respect_gitignore:
+        git_root = _find_git_root(base)
+        if git_root is not None:
+            file_list = _search_via_git(base, git_root, file_pattern, None, 10000)
+            if file_list is not None:
+                for fpath in file_list:
+                    if len(matches) >= max_matches:
+                        break
+                    try:
+                        content = Path(fpath).read_text(encoding="utf-8", errors="replace")
+                    except Exception:
+                        continue
+                    for i, line in enumerate(content.splitlines(), start=1):
+                        if compiled.search(line):
+                            matches.append({
+                                "file": fpath,
+                                "line": i,
+                                "content": line.rstrip(),
+                            })
+                            if len(matches) >= max_matches:
+                                break
+                elapsed = time.time() - start
+                logger.info(f"    [grep] 完成: {len(matches)} 个匹配 ({elapsed:.1f}s)")
+                return matches
+
+    # 回退路径: 文件系统遍历
+    logger.info(f"    [grep] 文件系统遍历 base={base_dir} file_pattern={file_pattern}")
     if respect_gitignore:
         skip_dirs = set(_IGNORE_DIRS)
         gitignore_patterns = _find_gitignore(base)
@@ -91,6 +125,8 @@ def grep_dir_tool(
         matches, max_matches, respect_gitignore,
     )
 
+    elapsed = time.time() - start
+    logger.info(f"    [grep] 完成: {len(matches)} 个匹配 ({elapsed:.1f}s)")
     return matches
 
 
