@@ -102,6 +102,7 @@ class Reviewer(BaseAgent):
             result = run_command_tool(
                 command=cmd,
                 cwd=context.project.project_root,
+                timeout=180,
             )
             if not result.success:
                 issues.append(

@@ -1,8 +1,11 @@
-"""命令执行工具 — subprocess 封装"""
+"""命令执行工具 — subprocess 封装（Windows 进程树安全）"""
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
+import sys
 from dataclasses import dataclass
 
 
@@ -18,12 +21,37 @@ class CommandResult:
         return self.exit_code == 0
 
 
+def _kill_process_tree(proc: subprocess.Popen) -> None:
+    """杀掉进程及其所有子进程（Windows 兼容）"""
+    try:
+        if sys.platform == "win32":
+            # Windows: taskkill /T 杀进程树
+            subprocess.run(
+                f"taskkill /F /T /PID {proc.pid}",
+                shell=True,
+                capture_output=True,
+                timeout=10,
+            )
+        else:
+            # Unix: 杀进程组
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:
+        # 最后手段
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
 def run_command_tool(
     command: str,
     cwd: str | None = None,
     timeout: int = 60,
 ) -> CommandResult:
     """执行 shell 命令
+
+    使用 Popen 手动管理超时和进程树清理，
+    避免 subprocess.run 在 Windows 上超时后挂起。
 
     Args:
         command: 要执行的命令字符串
@@ -34,25 +62,34 @@ def run_command_tool(
         CommandResult 包含 stdout/stderr/exit_code
     """
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             command,
             shell=True,
             cwd=cwd,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
         )
-        return CommandResult(
-            stdout=result.stdout,
-            stderr=result.stderr,
-            exit_code=result.returncode,
-        )
-    except subprocess.TimeoutExpired:
-        return CommandResult(
-            stdout="",
-            stderr=f"命令超时 ({timeout}s): {command}",
-            exit_code=-1,
-        )
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+            return CommandResult(
+                stdout=stdout,
+                stderr=stderr,
+                exit_code=proc.returncode,
+            )
+        except subprocess.TimeoutExpired:
+            # 杀掉整个进程树，而非仅顶层进程
+            _kill_process_tree(proc)
+            # 等待管道关闭（最多 5 秒）
+            try:
+                stdout, stderr = proc.communicate(timeout=5)
+            except (subprocess.TimeoutExpired, Exception):
+                stdout, stderr = "", ""
+            return CommandResult(
+                stdout="",
+                stderr=f"命令超时 ({timeout}s): {command}",
+                exit_code=-1,
+            )
     except Exception as e:
         return CommandResult(
             stdout="",
