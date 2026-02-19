@@ -25,14 +25,14 @@ class CommandResult:
 def run_command_tool(
     command: str,
     cwd: str | None = None,
-    timeout: int = 60,
+    timeout: int = 0,
 ) -> CommandResult:
     """执行 shell 命令，带实时输出流和心跳日志
 
     Args:
         command: 要执行的命令字符串
         cwd: 工作目录（可选）
-        timeout: 超时秒数
+        timeout: 超时秒数（0 = 无限制）
 
     Returns:
         CommandResult 包含 stdout/stderr/exit_code
@@ -69,8 +69,8 @@ RUN_COMMAND_TOOL_DEFINITION = {
             },
             "timeout": {
                 "type": "integer",
-                "description": "超时秒数，默认 60",
-                "default": 60,
+                "description": "超时秒数，0 = 无限制（默认）",
+                "default": 0,
             },
         },
         "required": ["command"],

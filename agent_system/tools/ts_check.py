@@ -53,7 +53,7 @@ _TSC_ERROR_RE = re.compile(
 def ts_check_tool(
     project_root: str,
     tsconfig: str = "tsconfig.json",
-    timeout: int = 120,
+    timeout: int = 0,
 ) -> TsCheckResult:
     """执行 TypeScript 编译检查并解析错误
 

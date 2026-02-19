@@ -46,7 +46,7 @@ class ProcessResult:
 def run_process(
     cmd: str,
     cwd: str | None = None,
-    timeout: int = 60,
+    timeout: int = 0,
     heartbeat_interval: int = 15,
     stream_output: bool = True,
     log_prefix: str = "[cmd] ",
@@ -55,12 +55,13 @@ def run_process(
 
     - 实时逐行转发 stdout/stderr 到日志
     - 每 heartbeat_interval 秒输出一次心跳（如果进程仍在运行）
-    - 超时自动杀掉整个进程树（Windows 安全）
+    - timeout > 0 时超时自动杀掉整个进程树（Windows 安全）
+    - timeout = 0 时无超时限制，进程运行到自然结束
 
     Args:
         cmd: 命令字符串
         cwd: 工作目录
-        timeout: 超时秒数
+        timeout: 超时秒数（0 = 无限制）
         heartbeat_interval: 心跳日志间隔秒数（0 禁用）
         stream_output: 是否实时流式输出命令的 stdout/stderr
         log_prefix: 日志前缀
@@ -118,15 +119,17 @@ def run_process(
     t_out.start()
     t_err.start()
 
-    # 等待完成或超时，期间输出心跳
-    interval = heartbeat_interval if heartbeat_interval > 0 else timeout
+    # 等待完成，期间输出心跳；timeout > 0 时有超时保护
+    hb = heartbeat_interval if heartbeat_interval > 0 else 30
     while True:
-        remaining = timeout - (time.time() - start_time)
-        if remaining <= 0:
-            # 已超时
-            wait_time = 0.0
+        if timeout > 0:
+            remaining = timeout - (time.time() - start_time)
+            if remaining <= 0:
+                wait_time = 0.1
+            else:
+                wait_time = min(hb, remaining)
         else:
-            wait_time = min(interval, remaining)
+            wait_time = hb
 
         t_out.join(timeout=max(wait_time, 0.1))
         elapsed = time.time() - start_time
@@ -135,7 +138,7 @@ def run_process(
             # stdout 读完 → 进程已结束
             break
 
-        if elapsed >= timeout:
+        if timeout > 0 and elapsed >= timeout:
             logger.warning(
                 f"    {log_prefix}超时 ({timeout}s)，正在终止进程树..."
             )
