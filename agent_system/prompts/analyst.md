@@ -58,6 +58,9 @@
   "files": [
     {"path": "相对路径", "action": "create|modify", "purpose": "用途说明"}
   ],
+  "testFiles": [
+    {"path": "tests/对应路径/XxxClass.test.ts", "testsFor": "对应的源文件路径", "keyScenarios": ["要测试的关键场景"]}
+  ],
   "gaps": ["缺口描述1", "缺口描述2"],
   "dependencies": ["依赖的已有模块/类"]
 }

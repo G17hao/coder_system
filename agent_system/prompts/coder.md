@@ -38,6 +38,22 @@
 - 事件/消息类型使用枚举，不使用魔术字符串或数字
 - 错误处理：网络回调中必须有 try-catch，日志中标明来源模块
 
+### 单元测试
+- **每个新增的业务类/服务类必须有对应的 vitest 测试文件**
+- 测试文件放在 `tests/` 目录下，镜像 `assets/scripts/` 的目录结构
+  - 例如：`assets/scripts/model/PlayerModel.ts` → `tests/model/PlayerModel.test.ts`
+  - 例如：`assets/scripts/net/NetModelBridge.ts` → `tests/net/NetModelBridge.test.ts`
+- 使用 `import { describe, it, expect, vi, beforeEach } from 'vitest'` 编写测试
+- Cocos Creator 的 `cc` 模块已被 mock（`tests/__mocks__/cc.ts`），`import { EventTarget, Node, Component, ... } from 'cc'` 可直接使用
+- 测试重点：
+  - 公共方法的输入输出正确性
+  - 事件的触发与回调参数
+  - 边界条件（空数据、重复调用、异常输入）
+  - 单例的初始化与重置
+- **不要测试** Cocos 引擎内部行为（渲染、物理等），只测试纯逻辑
+- 如果 cc mock 中缺少某个类型，可以在测试文件中局部 mock，不要修改 `tests/__mocks__/cc.ts`
+- 每个测试文件至少包含 3 个测试用例
+
 ### 重试修复
 如果这次是重试（上次审查未通过），务必：
 1. 仔细阅读上次失败的 issues 和 suggestions
@@ -63,5 +79,6 @@
 
 - 输出**完整文件内容**，不使用 diff 格式
 - 确保生成的代码可以通过 TypeScript 编译检查
+- 确保生成的测试可以通过 `npx vitest run` 执行且全部通过
 - 严格遵循上述编码规范
 - 如果分析报告中有 `dependencies` 字段，确保相应的 import 存在
