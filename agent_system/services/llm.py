@@ -38,8 +38,12 @@ class LLMService:
         model: str = "claude-sonnet-4-20250514",
         max_tokens: int = 8192,
         temperature: float = 0.0,
+        base_url: str = "",
     ) -> None:
-        self._client = anthropic.Anthropic(api_key=api_key)
+        client_kwargs: dict[str, Any] = {"api_key": api_key}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        self._client = anthropic.Anthropic(**client_kwargs)
         self._model = model
         self._max_tokens = max_tokens
         self._temperature = temperature

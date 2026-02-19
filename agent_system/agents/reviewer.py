@@ -75,7 +75,10 @@ class Reviewer(BaseAgent):
         if hasattr(project, "review_commands"):
             commands_text = json.dumps(project.review_commands, ensure_ascii=False)
 
+        conventions = getattr(project, "coding_conventions", "")
+
         return self._render_template(template, {
+            "codingConventions": conventions or "无",
             "reviewChecklist": checklist_text or "无",
             "reviewCommands": commands_text or "无",
         })

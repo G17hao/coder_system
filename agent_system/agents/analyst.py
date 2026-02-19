@@ -92,10 +92,27 @@ class Analyst(BaseAgent):
         for m in context.project.pattern_mappings:
             mappings_text += f"- {m.from_pattern} → {m.to_pattern}\n"
 
+        # 格式化已完成任务上下文
+        completed_text = self._format_completed_tasks(context)
+
+        conventions = getattr(context.project, "coding_conventions", "")
+
         return self._render_template(template, {
             "projectDescription": context.project.project_description,
+            "codingConventions": conventions or "无",
             "patternMappings": mappings_text or "无",
+            "completedTasks": completed_text or "无（首个任务）",
         })
+
+    @staticmethod
+    def _format_completed_tasks(context: AgentContext) -> str:
+        """格式化已完成任务列表，供 prompt 注入"""
+        if not context.completed_tasks:
+            return ""
+        lines: list[str] = []
+        for task_id, task in sorted(context.completed_tasks.items()):
+            lines.append(f"- [{task.id}] {task.title}: {task.description[:80]}")
+        return "\n".join(lines)
 
     def _build_user_message(self, task: Task, context: AgentContext) -> str:
         """构建用户消息"""

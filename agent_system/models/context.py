@@ -12,6 +12,7 @@ from agent_system.models.task import Task
 class AgentConfig:
     """Agent 系统运行配置"""
     anthropic_api_key: str = ""
+    anthropic_base_url: str = ""
     model: str = "claude-sonnet-4-20250514"
     max_tokens: int = 8192
     temperature: float = 0.0

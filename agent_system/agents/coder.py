@@ -122,7 +122,7 @@ class Coder(BaseAgent):
         Returns:
             CodeChanges 文件变更集合
         """
-        system_prompt = self.build_system_prompt(context.project)
+        system_prompt = self.build_system_prompt(context.project, context=context)
         user_message = self._build_user_message(task, analysis_report, context)
 
         tools = [
@@ -142,11 +142,16 @@ class Coder(BaseAgent):
 
         return CodeChanges.from_json(response.content)
 
-    def build_system_prompt(self, project: Any) -> str:
+    def build_system_prompt(
+        self,
+        project: Any,
+        context: AgentContext | None = None,
+    ) -> str:
         """构建 Coder 系统提示词（公开方法，方便测试）
 
         Args:
             project: ProjectConfig 实例
+            context: Agent 上下文（可选，用于获取已完成任务信息）
 
         Returns:
             渲染后的系统提示词
@@ -161,10 +166,24 @@ class Coder(BaseAgent):
 
         conventions = getattr(project, "coding_conventions", "")
 
+        # 格式化已完成任务上下文
+        completed_text = self._format_completed_tasks(context)
+
         return self._render_template(template, {
             "codingConventions": conventions,
             "patternMappings": mappings_text or "无",
+            "completedTasks": completed_text or "无（首个任务）",
         })
+
+    @staticmethod
+    def _format_completed_tasks(context: AgentContext | None) -> str:
+        """格式化已完成任务列表"""
+        if context is None or not context.completed_tasks:
+            return ""
+        lines: list[str] = []
+        for task_id, task in sorted(context.completed_tasks.items()):
+            lines.append(f"- [{task.id}] {task.title}: {task.description[:80]}")
+        return "\n".join(lines)
 
     def _build_user_message(
         self,

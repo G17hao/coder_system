@@ -60,6 +60,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Anthropic API key（也可通过 ANTHROPIC_API_KEY 环境变量设置）",
     )
     parser.add_argument(
+        "--base-url",
+        type=str,
+        default="",
+        help="Anthropic API base URL（也可通过 ANTHROPIC_BASE_URL 环境变量设置）",
+    )
+    parser.add_argument(
         "--model",
         type=str,
         default="claude-sonnet-4-20250514",
@@ -104,6 +110,7 @@ def main(argv: list[str] | None = None) -> int:
 
     config = AgentConfig(
         anthropic_api_key=args.api_key or os.environ.get("ANTHROPIC_API_KEY", ""),
+        anthropic_base_url=args.base_url or os.environ.get("ANTHROPIC_BASE_URL", ""),
         model=args.model,
         project_config_file=args.project,
         dry_run=args.dry_run,

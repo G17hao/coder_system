@@ -323,11 +323,13 @@ class Orchestrator:
     def _create_llm(self) -> LLMService:
         """创建 LLM 服务实例"""
         api_key = self._config.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        base_url = self._config.anthropic_base_url or os.environ.get("ANTHROPIC_BASE_URL", "")
         return LLMService(
             api_key=api_key,
             model=self._config.model,
             max_tokens=self._config.max_tokens,
             temperature=self._config.temperature,
+            base_url=base_url,
         )
 
     def _save_state(self) -> None:
