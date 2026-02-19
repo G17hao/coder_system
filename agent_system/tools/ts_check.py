@@ -1,12 +1,11 @@
-"""TypeScript 编译检查工具 — 结构化解析 tsc 输出（Windows 进程树安全）"""
+"""TypeScript 编译检查工具 — 结构化解析 tsc 输出（带实时输出和心跳日志）"""
 
 from __future__ import annotations
 
 import re
-import subprocess
 from dataclasses import dataclass, field
 
-from agent_system.tools.run_command import _kill_process_tree
+from agent_system.tools.process import run_process
 
 
 @dataclass
@@ -68,36 +67,22 @@ def ts_check_tool(
     """
     cmd = f"npx tsc --noEmit --project {tsconfig}"
 
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            shell=True,
-            cwd=project_root,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        try:
-            stdout, stderr = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            _kill_process_tree(proc)
-            try:
-                proc.communicate(timeout=5)
-            except Exception:
-                pass
-            return TsCheckResult(
-                success=False,
-                raw_output=f"tsc 超时 ({timeout}s)",
-            )
+    result = run_process(
+        cmd=cmd,
+        cwd=project_root,
+        timeout=timeout,
+        heartbeat_interval=15,
+        stream_output=True,
+        log_prefix="[tsc] ",
+    )
 
-        returncode = proc.returncode
-    except Exception as e:
+    if result.timed_out:
         return TsCheckResult(
             success=False,
-            raw_output=f"执行失败: {e}",
+            raw_output=f"tsc 超时 ({timeout}s)",
         )
 
-    raw = stdout + stderr
+    raw = result.stdout + result.stderr
     errors: list[TsError] = []
 
     for line in raw.splitlines():
@@ -112,7 +97,7 @@ def ts_check_tool(
             ))
 
     return TsCheckResult(
-        success=returncode == 0,
+        success=result.returncode == 0,
         error_count=len(errors),
         errors=errors,
         raw_output=raw,

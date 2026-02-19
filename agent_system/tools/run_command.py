@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import os
-import signal
-import subprocess
-import sys
 from dataclasses import dataclass
+
+from agent_system.tools.process import kill_process_tree, run_process
+
+# 保持后向兼容: ts_check 等旧代码可能 import 这个
+_kill_process_tree = kill_process_tree
 
 
 @dataclass
@@ -21,37 +22,12 @@ class CommandResult:
         return self.exit_code == 0
 
 
-def _kill_process_tree(proc: subprocess.Popen) -> None:
-    """杀掉进程及其所有子进程（Windows 兼容）"""
-    try:
-        if sys.platform == "win32":
-            # Windows: taskkill /T 杀进程树
-            subprocess.run(
-                f"taskkill /F /T /PID {proc.pid}",
-                shell=True,
-                capture_output=True,
-                timeout=10,
-            )
-        else:
-            # Unix: 杀进程组
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except Exception:
-        # 最后手段
-        try:
-            proc.kill()
-        except Exception:
-            pass
-
-
 def run_command_tool(
     command: str,
     cwd: str | None = None,
     timeout: int = 60,
 ) -> CommandResult:
-    """执行 shell 命令
-
-    使用 Popen 手动管理超时和进程树清理，
-    避免 subprocess.run 在 Windows 上超时后挂起。
+    """执行 shell 命令，带实时输出流和心跳日志
 
     Args:
         command: 要执行的命令字符串
@@ -61,41 +37,19 @@ def run_command_tool(
     Returns:
         CommandResult 包含 stdout/stderr/exit_code
     """
-    try:
-        proc = subprocess.Popen(
-            command,
-            shell=True,
-            cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        try:
-            stdout, stderr = proc.communicate(timeout=timeout)
-            return CommandResult(
-                stdout=stdout,
-                stderr=stderr,
-                exit_code=proc.returncode,
-            )
-        except subprocess.TimeoutExpired:
-            # 杀掉整个进程树，而非仅顶层进程
-            _kill_process_tree(proc)
-            # 等待管道关闭（最多 5 秒）
-            try:
-                stdout, stderr = proc.communicate(timeout=5)
-            except (subprocess.TimeoutExpired, Exception):
-                stdout, stderr = "", ""
-            return CommandResult(
-                stdout="",
-                stderr=f"命令超时 ({timeout}s): {command}",
-                exit_code=-1,
-            )
-    except Exception as e:
-        return CommandResult(
-            stdout="",
-            stderr=f"命令执行失败: {e}",
-            exit_code=-1,
-        )
+    result = run_process(
+        cmd=command,
+        cwd=cwd,
+        timeout=timeout,
+        heartbeat_interval=15,
+        stream_output=True,
+        log_prefix="[cmd] ",
+    )
+    return CommandResult(
+        stdout=result.stdout,
+        stderr=result.stderr if not result.timed_out else result.stderr,
+        exit_code=result.returncode,
+    )
 
 
 # LLM tool_use 工具定义
