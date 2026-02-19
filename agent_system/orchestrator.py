@@ -299,8 +299,8 @@ class Orchestrator:
                 task.review_result = result
 
                 if result.passed:
-                    # 成功: git commit
-                    commit_hash = self._git_commit(task)
+                    # 成功: LLM 生成 commit message 并提交
+                    commit_hash = self._git_commit(task, changes)
                     task.status = TaskStatus.DONE
                     task.commit_hash = commit_hash
                     self._context.completed_tasks[task.id] = task
@@ -433,16 +433,88 @@ class Orchestrator:
             self._file_service.write(f.path, f.content)
             logger.info(f"    [write] 写入: {f.path}")
 
-    def _git_commit(self, task: Task) -> str | None:
-        """Git 提交"""
+    def _git_commit(self, task: Task, changes: CodeChanges | None = None) -> str | None:
+        """让 LLM 生成 commit message 并提交
+
+        Args:
+            task: 当前完成的任务
+            changes: 代码变更（用于生成 commit message）
+
+        Returns:
+            commit hash 或 None
+        """
         if not self._git or not self._config.git_auto_commit or self._config.dry_run:
             return None
         try:
-            if self._git.has_changes():
-                self._git.add_all()
-                return self._git.commit(f"agent: {task.id} - {task.title}")
+            if not self._git.has_changes():
+                return None
+
+            # 让 LLM 生成 commit message
+            commit_msg = self._generate_commit_message(task, changes)
+            self._git.add_all()
+            commit_hash = self._git.commit(commit_msg)
+            logger.info(f"  [git] 提交: {commit_msg.splitlines()[0]}")
+            return commit_hash
         except GitError as e:
             logger.warning(f"Git commit 失败: {e}")
+        return None
+
+    def _generate_commit_message(self, task: Task, changes: CodeChanges | None) -> str:
+        """让 LLM 根据任务和变更内容生成 git commit message
+
+        Args:
+            task: 当前任务
+            changes: 代码变更
+
+        Returns:
+            commit message 字符串
+        """
+        if not self._llm or not changes or not changes.files:
+            return f"feat({task.id}): {task.title}"
+
+        # 构建变更摘要
+        file_summary = []
+        for f in changes.files:
+            lines = f.content.count('\n') + 1
+            file_summary.append(f"  - {f.path} ({f.action}, {lines} lines)")
+        files_text = "\n".join(file_summary)
+
+        prompt = (
+            f"你是一个 Git commit message 生成器。\n"
+            f"请根据以下信息生成一条简洁专业的 Git commit message。\n\n"
+            f"## 规则\n"
+            f"- 使用 Conventional Commits 格式: type(scope): description\n"
+            f"- type: feat/fix/refactor/chore 等\n"
+            f"- 第一行不超过 72 字符\n"
+            f"- 可以有正文部分，列出关键变更\n"
+            f"- 使用英文\n"
+            f"- 只输出 commit message 本身，不要其他内容\n\n"
+            f"## 任务信息\n"
+            f"- ID: {task.id}\n"
+            f"- 标题: {task.title}\n"
+            f"- 描述: {task.description[:300]}\n\n"
+            f"## 变更文件\n{files_text}\n"
+        )
+
+        try:
+            response = self._llm.call(
+                system_prompt="你是 Git commit message 生成器，只输出 commit message。",
+                messages=[{"role": "user", "content": prompt}],
+            )
+            msg = response.content.strip()
+            # 清理可能的 markdown 包裹
+            if msg.startswith("```"):
+                msg = msg.split("\n", 1)[-1]
+            if msg.endswith("```"):
+                msg = msg.rsplit("```", 1)[0]
+            msg = msg.strip()
+            if msg:
+                return msg
+        except Exception as e:
+            logger.warning(f"LLM 生成 commit message 失败: {e}")
+
+        # 降级：使用固定格式
+        return f"feat({task.id}): {task.title}"
         return None
 
     def _revert_changes(self) -> None:
