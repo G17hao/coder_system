@@ -260,14 +260,16 @@ class TestOrchestratorReflection:
     def test_reflection_called_on_success(self, tmp_path: Path) -> None:
         """任务成功时调用反思"""
         from agent_system.orchestrator import Orchestrator
-        from agent_system.agents.coder import CodeChanges
+        from agent_system.agents.coder import CodeChanges, FileChange
 
         # Mock agents
         planner = MagicMock()
         analyst = MagicMock()
         analyst.execute.return_value = '{"analysis": "ok"}'
         coder = MagicMock()
-        coder.execute.return_value = CodeChanges(files=[])
+        coder.execute.return_value = CodeChanges(files=[
+            FileChange(path="dummy.ts", content="// gen", action="create"),
+        ])
         reviewer = MagicMock()
         reviewer.execute.return_value = ReviewResult(passed=True)
         reflector = MagicMock()
@@ -303,7 +305,7 @@ class TestOrchestratorReflection:
     def test_reflection_called_on_failure(self, tmp_path: Path) -> None:
         """任务失败时也调用反思"""
         from agent_system.orchestrator import Orchestrator
-        from agent_system.agents.coder import CodeChanges
+        from agent_system.agents.coder import CodeChanges, FileChange as FC3
 
         reviewer = MagicMock()
         reviewer.execute.return_value = ReviewResult(
@@ -323,7 +325,9 @@ class TestOrchestratorReflection:
             planner=MagicMock(),
             analyst=MagicMock(execute=MagicMock(return_value="analysis")),
             coder=MagicMock(execute=MagicMock(
-                return_value=CodeChanges(files=[])
+                return_value=CodeChanges(files=[
+                    FC3(path="d.ts", content="//", action="create"),
+                ])
             )),
             reviewer=reviewer,
             reflector=reflector,
@@ -371,7 +375,7 @@ class TestOrchestratorReflection:
     def test_reflection_failure_does_not_crash(self, tmp_path: Path) -> None:
         """反思异常不影响主流程"""
         from agent_system.orchestrator import Orchestrator
-        from agent_system.agents.coder import CodeChanges
+        from agent_system.agents.coder import CodeChanges, FileChange as FC
 
         reflector = MagicMock()
         reflector.execute.side_effect = RuntimeError("LLM down")
@@ -384,7 +388,9 @@ class TestOrchestratorReflection:
             planner=MagicMock(),
             analyst=MagicMock(execute=MagicMock(return_value="ok")),
             coder=MagicMock(execute=MagicMock(
-                return_value=CodeChanges(files=[])
+                return_value=CodeChanges(files=[
+                    FC(path="d.ts", content="//", action="create"),
+                ])
             )),
             reviewer=MagicMock(execute=MagicMock(
                 return_value=ReviewResult(passed=True)

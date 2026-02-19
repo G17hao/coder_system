@@ -42,7 +42,9 @@ def _make_mock_agents(
     analyst.execute.return_value = analyst_report
 
     if coder_changes is None:
-        coder_changes = CodeChanges(files=[])
+        coder_changes = CodeChanges(files=[
+            FileChange(path="dummy.ts", content="// generated", action="create"),
+        ])
     coder = MagicMock(spec=Coder)
     coder.execute.return_value = coder_changes
 

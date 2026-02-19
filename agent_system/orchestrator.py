@@ -264,6 +264,14 @@ class Orchestrator:
                     changes = CodeChanges(files=[])
                     task.coder_output = "{dry_run: true}"
 
+                # 5.1 编码空输出检测 → 跳过审查，直接重试
+                if not self._config.dry_run and not changes.files:
+                    logger.warning(
+                        f"  [编码] Coder 输出空文件列表，跳过审查直接重试"
+                    )
+                    task.retry_count += 1
+                    continue
+
                 # 6. 写入文件
                 if not self._config.dry_run:
                     self._write_changes(changes)

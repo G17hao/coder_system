@@ -250,7 +250,7 @@ class TestOrchestratorConversationLogging:
     def test_conversations_saved_on_task(self, tmp_path: Path) -> None:
         """任务执行时保存对话日志"""
         from agent_system.orchestrator import Orchestrator
-        from agent_system.agents.coder import CodeChanges
+        from agent_system.agents.coder import CodeChanges, FileChange
         from agent_system.agents.reflector import ReflectionReport
         from agent_system.models.context import AgentConfig, AgentContext
         from agent_system.models.project_config import ProjectConfig
@@ -268,7 +268,9 @@ class TestOrchestratorConversationLogging:
             config=config,
             planner=MagicMock(),
             analyst=MagicMock(execute=MagicMock(return_value="analysis")),
-            coder=MagicMock(execute=MagicMock(return_value=CodeChanges(files=[]))),
+            coder=MagicMock(execute=MagicMock(return_value=CodeChanges(files=[
+                FileChange(path="test.ts", content="// test", action="create"),
+            ]))),
             reviewer=MagicMock(execute=MagicMock(return_value=ReviewResult(passed=True))),
             reflector=MagicMock(execute=MagicMock(return_value=ReflectionReport.from_dict({
                 "task_id": "T-1", "task_title": "Test",
@@ -298,7 +300,7 @@ class TestOrchestratorConversationLogging:
     def test_no_logger_still_works(self) -> None:
         """无 ConversationLogger 时不影响运行"""
         from agent_system.orchestrator import Orchestrator
-        from agent_system.agents.coder import CodeChanges
+        from agent_system.agents.coder import CodeChanges, FileChange as FC2
         from agent_system.models.context import AgentConfig, AgentContext
         from agent_system.models.project_config import ProjectConfig
         from agent_system.models.task import Task, TaskStatus, ReviewResult
@@ -315,7 +317,9 @@ class TestOrchestratorConversationLogging:
             config=config,
             planner=MagicMock(),
             analyst=MagicMock(execute=MagicMock(return_value="ok")),
-            coder=MagicMock(execute=MagicMock(return_value=CodeChanges(files=[]))),
+            coder=MagicMock(execute=MagicMock(return_value=CodeChanges(files=[
+                FC2(path="test.ts", content="// test", action="create"),
+            ]))),
             reviewer=MagicMock(execute=MagicMock(return_value=ReviewResult(passed=True))),
             reflector=None,
             context=context,
