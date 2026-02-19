@@ -11,6 +11,9 @@ from agent_system.models.task import Task, ReviewResult
 from agent_system.agents.coder import CodeChanges
 from agent_system.tools.run_command import run_command_tool, RUN_COMMAND_TOOL_DEFINITION
 from agent_system.tools.read_file import READ_FILE_TOOL_DEFINITION
+from agent_system.tools.grep_content import GREP_CONTENT_TOOL_DEFINITION
+from agent_system.tools.diff_file import DIFF_FILE_TOOL_DEFINITION
+from agent_system.tools.ts_check import TS_CHECK_TOOL_DEFINITION
 
 
 class Reviewer(BaseAgent):
@@ -141,7 +144,12 @@ class Reviewer(BaseAgent):
             f'{{"passed": true/false, "issues": [...], "suggestions": [...]}}'
         )
 
-        tools = [READ_FILE_TOOL_DEFINITION]
+        tools = [
+            READ_FILE_TOOL_DEFINITION,
+            GREP_CONTENT_TOOL_DEFINITION,
+            DIFF_FILE_TOOL_DEFINITION,
+            TS_CHECK_TOOL_DEFINITION,
+        ]
 
         class ReviewToolExecutor:
             def execute(self, name: str, tool_input: dict[str, Any]) -> str:
@@ -155,6 +163,42 @@ class Reviewer(BaseAgent):
                         )
                     except FileNotFoundError as e:
                         return f"错误: {e}"
+
+                elif name == "grep_content":
+                    from agent_system.tools.grep_content import grep_content_tool, grep_dir_tool
+                    from pathlib import Path
+                    target = Path(tool_input["path"])
+                    if target.is_dir():
+                        results = grep_dir_tool(
+                            base_dir=tool_input["path"],
+                            pattern=tool_input["pattern"],
+                            file_pattern=tool_input.get("file_pattern", "*.ts"),
+                            max_matches=tool_input.get("max_matches", 50),
+                        )
+                    else:
+                        results = grep_content_tool(
+                            path=tool_input["path"],
+                            pattern=tool_input["pattern"],
+                            max_matches=tool_input.get("max_matches", 50),
+                        )
+                    return json.dumps(results, ensure_ascii=False)
+
+                elif name == "diff_file":
+                    from agent_system.tools.diff_file import diff_file_tool
+                    return diff_file_tool(
+                        file_a=tool_input["file_a"],
+                        file_b=tool_input["file_b"],
+                        context_lines=tool_input.get("context_lines", 3),
+                    )
+
+                elif name == "ts_check":
+                    from agent_system.tools.ts_check import ts_check_tool
+                    result = ts_check_tool(
+                        project_root=tool_input["project_root"],
+                        tsconfig=tool_input.get("tsconfig", "tsconfig.json"),
+                    )
+                    return json.dumps(result.to_dict(), ensure_ascii=False)
+
                 return f"未知工具: {name}"
 
         response = self._llm.call_with_tools_loop(

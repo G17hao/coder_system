@@ -12,6 +12,9 @@ from agent_system.models.task import Task
 from agent_system.tools.read_file import READ_FILE_TOOL_DEFINITION
 from agent_system.tools.search_file import SEARCH_FILE_TOOL_DEFINITION
 from agent_system.tools.write_file import WRITE_FILE_TOOL_DEFINITION
+from agent_system.tools.grep_content import GREP_CONTENT_TOOL_DEFINITION
+from agent_system.tools.list_directory import LIST_DIRECTORY_TOOL_DEFINITION
+from agent_system.tools.replace_in_file import REPLACE_IN_FILE_TOOL_DEFINITION
 
 
 @dataclass
@@ -93,6 +96,41 @@ class CoderToolExecutor:
                 content=tool_input["content"],
             )
 
+        elif name == "grep_content":
+            from agent_system.tools.grep_content import grep_content_tool, grep_dir_tool
+            from pathlib import Path
+            target = Path(tool_input["path"])
+            if target.is_dir():
+                results = grep_dir_tool(
+                    base_dir=tool_input["path"],
+                    pattern=tool_input["pattern"],
+                    file_pattern=tool_input.get("file_pattern", "*.ts"),
+                    max_matches=tool_input.get("max_matches", 50),
+                )
+            else:
+                results = grep_content_tool(
+                    path=tool_input["path"],
+                    pattern=tool_input["pattern"],
+                    max_matches=tool_input.get("max_matches", 50),
+                )
+            return json.dumps(results, ensure_ascii=False)
+
+        elif name == "list_directory":
+            from agent_system.tools.list_directory import list_directory_tool
+            return list_directory_tool(
+                path=tool_input["path"],
+                max_depth=tool_input.get("max_depth", 3),
+                include_files=tool_input.get("include_files", True),
+            )
+
+        elif name == "replace_in_file":
+            from agent_system.tools.replace_in_file import replace_in_file_tool
+            return replace_in_file_tool(
+                path=tool_input["path"],
+                old_text=tool_input["old_text"],
+                new_text=tool_input["new_text"],
+            )
+
         return f"未知工具: {name}"
 
 
@@ -129,6 +167,9 @@ class Coder(BaseAgent):
             READ_FILE_TOOL_DEFINITION,
             SEARCH_FILE_TOOL_DEFINITION,
             WRITE_FILE_TOOL_DEFINITION,
+            GREP_CONTENT_TOOL_DEFINITION,
+            LIST_DIRECTORY_TOOL_DEFINITION,
+            REPLACE_IN_FILE_TOOL_DEFINITION,
         ]
         tool_executor = CoderToolExecutor()
 

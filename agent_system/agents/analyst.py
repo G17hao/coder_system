@@ -10,6 +10,9 @@ from agent_system.models.context import AgentContext
 from agent_system.models.task import Task
 from agent_system.tools.read_file import READ_FILE_TOOL_DEFINITION
 from agent_system.tools.search_file import SEARCH_FILE_TOOL_DEFINITION
+from agent_system.tools.grep_content import GREP_CONTENT_TOOL_DEFINITION
+from agent_system.tools.list_directory import LIST_DIRECTORY_TOOL_DEFINITION
+from agent_system.tools.project_structure import GET_PROJECT_STRUCTURE_TOOL_DEFINITION
 
 
 class AnalystToolExecutor:
@@ -45,6 +48,41 @@ class AnalystToolExecutor:
             )
             return json.dumps(results, ensure_ascii=False)
 
+        elif name == "grep_content":
+            from agent_system.tools.grep_content import grep_content_tool, grep_dir_tool
+            from pathlib import Path
+            target = Path(tool_input["path"])
+            if target.is_dir():
+                results = grep_dir_tool(
+                    base_dir=tool_input["path"],
+                    pattern=tool_input["pattern"],
+                    file_pattern=tool_input.get("file_pattern", "*.ts"),
+                    max_matches=tool_input.get("max_matches", 50),
+                )
+            else:
+                results = grep_content_tool(
+                    path=tool_input["path"],
+                    pattern=tool_input["pattern"],
+                    max_matches=tool_input.get("max_matches", 50),
+                )
+            return json.dumps(results, ensure_ascii=False)
+
+        elif name == "list_directory":
+            from agent_system.tools.list_directory import list_directory_tool
+            return list_directory_tool(
+                path=tool_input["path"],
+                max_depth=tool_input.get("max_depth", 3),
+                include_files=tool_input.get("include_files", True),
+            )
+
+        elif name == "get_project_structure":
+            from agent_system.tools.project_structure import get_project_structure_tool
+            return get_project_structure_tool(
+                project_root=tool_input["project_root"],
+                source_dirs=tool_input.get("source_dirs"),
+                extensions=tool_input.get("extensions"),
+            )
+
         return f"未知工具: {name}"
 
 
@@ -70,7 +108,13 @@ class Analyst(BaseAgent):
         system_prompt = self._build_system_prompt(context)
         user_message = self._build_user_message(task, context)
 
-        tools = [READ_FILE_TOOL_DEFINITION, SEARCH_FILE_TOOL_DEFINITION]
+        tools = [
+            READ_FILE_TOOL_DEFINITION,
+            SEARCH_FILE_TOOL_DEFINITION,
+            GREP_CONTENT_TOOL_DEFINITION,
+            LIST_DIRECTORY_TOOL_DEFINITION,
+            GET_PROJECT_STRUCTURE_TOOL_DEFINITION,
+        ]
         tool_executor = AnalystToolExecutor()
 
         response = self._llm.call_with_tools_loop(
@@ -78,7 +122,7 @@ class Analyst(BaseAgent):
             messages=[{"role": "user", "content": user_message}],
             tools=tools,
             tool_executor=tool_executor,
-            max_iterations=10,
+            max_iterations=15,
         )
 
         return response.content
