@@ -1,9 +1,17 @@
-"""内容搜索工具 — 在文件内容中搜索关键字，返回匹配行+行号"""
+"""内容搜索工具 — 在文件内容中搜索关键字，返回匹配行+行号，支持 .gitignore"""
 
 from __future__ import annotations
 
+import fnmatch
 import re
 from pathlib import Path
+
+from agent_system.tools.list_directory import (
+    _IGNORE_DIRS,
+    _IGNORE_SUFFIXES,
+    _find_gitignore,
+    _is_gitignored,
+)
 
 
 def grep_content_tool(
@@ -47,14 +55,18 @@ def grep_dir_tool(
     pattern: str,
     file_pattern: str = "*.ts",
     max_matches: int = 100,
+    respect_gitignore: bool = True,
 ) -> list[dict[str, str | int]]:
     """在目录下所有匹配文件中搜索内容
+
+    自动遵循 .gitignore 规则跳过被忽略的目录。
 
     Args:
         base_dir: 搜索根目录
         pattern: 正则表达式模式
         file_pattern: glob 文件名匹配模式
         max_matches: 最大返回匹配数
+        respect_gitignore: 是否遵循 .gitignore 规则（默认 True）
 
     Returns:
         匹配结果列表 [{"file": 文件路径, "line": 行号, "content": 行内容}]
@@ -66,25 +78,85 @@ def grep_dir_tool(
     compiled = re.compile(pattern, re.IGNORECASE)
     matches: list[dict[str, str | int]] = []
 
-    for fp in sorted(base.rglob(file_pattern)):
-        if not fp.is_file():
-            continue
-        try:
-            content = fp.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            continue
+    if respect_gitignore:
+        skip_dirs = set(_IGNORE_DIRS)
+        gitignore_patterns = _find_gitignore(base)
+    else:
+        skip_dirs = set()
+        gitignore_patterns = []
 
-        for i, line in enumerate(content.splitlines(), start=1):
-            if compiled.search(line):
-                matches.append({
-                    "file": str(fp),
-                    "line": i,
-                    "content": line.rstrip(),
-                })
-                if len(matches) >= max_matches:
-                    return matches
+    _grep_walk(
+        base, base, compiled, file_pattern,
+        skip_dirs, gitignore_patterns,
+        matches, max_matches, respect_gitignore,
+    )
 
     return matches
+
+
+def _grep_walk(
+    directory: Path,
+    root: Path,
+    compiled: re.Pattern[str],
+    file_pattern: str,
+    skip_dirs: set[str],
+    gitignore_patterns: list[re.Pattern[str]],
+    matches: list[dict[str, str | int]],
+    max_matches: int,
+    respect_gitignore: bool,
+) -> None:
+    """递归搜索目录中的文件内容"""
+    if len(matches) >= max_matches:
+        return
+
+    try:
+        entries = sorted(directory.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
+    except (PermissionError, OSError):
+        return
+
+    for entry in entries:
+        if len(matches) >= max_matches:
+            return
+
+        if entry.name.startswith("."):
+            continue
+
+        try:
+            rel = entry.relative_to(root).as_posix()
+        except ValueError:
+            rel = entry.name
+
+        if entry.is_dir():
+            if entry.name in skip_dirs:
+                continue
+            if gitignore_patterns and _is_gitignored(entry.name, rel, gitignore_patterns):
+                continue
+            _grep_walk(
+                entry, root, compiled, file_pattern,
+                skip_dirs, gitignore_patterns,
+                matches, max_matches, respect_gitignore,
+            )
+        elif entry.is_file():
+            if respect_gitignore and entry.suffix in _IGNORE_SUFFIXES:
+                continue
+            if gitignore_patterns and _is_gitignored(entry.name, rel, gitignore_patterns):
+                continue
+            if not fnmatch.fnmatch(entry.name, file_pattern):
+                continue
+            try:
+                content = entry.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+
+            for i, line in enumerate(content.splitlines(), start=1):
+                if compiled.search(line):
+                    matches.append({
+                        "file": str(entry),
+                        "line": i,
+                        "content": line.rstrip(),
+                    })
+                    if len(matches) >= max_matches:
+                        return
 
 
 # LLM tool_use 工具定义
@@ -92,6 +164,7 @@ GREP_CONTENT_TOOL_DEFINITION = {
     "name": "grep_content",
     "description": (
         "在文件或目录中搜索匹配正则表达式的内容行，返回文件路径、行号和匹配行内容。"
+        "默认遵循 .gitignore 规则，自动跳过被忽略的目录（如 node_modules/build 等）。"
         "比 read_file 更高效——不需要读取整个文件就能定位关键代码。"
     ),
     "input_schema": {

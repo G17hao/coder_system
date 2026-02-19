@@ -1,19 +1,20 @@
-"""项目结构摘要工具 — 一次性返回项目关键文件和结构"""
+"""项目结构摘要工具 — 一次性返回项目关键文件和结构，支持 .gitignore"""
 
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
+
+from agent_system.tools.list_directory import (
+    _IGNORE_DIRS,
+    _IGNORE_SUFFIXES,
+    _find_gitignore,
+    _is_gitignored,
+)
 
 # 关注的源代码文件后缀
 _SOURCE_SUFFIXES = {".ts", ".lua", ".js", ".json"}
-
-# 忽略的目录
-_IGNORE_DIRS = {
-    "node_modules", ".git", "__pycache__", "dist", "build",
-    "library", "temp", ".pytest_cache", "profiles", "remote",
-    "external_assets", "external_assets_1024",
-}
 
 
 def get_project_structure_tool(
@@ -23,6 +24,9 @@ def get_project_structure_tool(
     max_files: int = 500,
 ) -> str:
     """生成项目结构摘要
+
+    自动遵循 .gitignore 规则跳过被忽略的目录和文件。
+    单次遍历同时收集文件列表和 TypeScript export 声明。
 
     Args:
         project_root: 项目根目录
@@ -39,6 +43,10 @@ def get_project_structure_tool(
 
     exts = set(extensions) if extensions else _SOURCE_SUFFIXES
 
+    # 解析 gitignore
+    skip_dirs = set(_IGNORE_DIRS)
+    gitignore_patterns = _find_gitignore(root)
+
     # 确定扫描目标
     scan_roots: list[Path] = []
     if source_dirs:
@@ -49,64 +57,21 @@ def get_project_structure_tool(
     else:
         scan_roots = [root]
 
-    # 收集文件
+    # 单次遍历同时收集文件和 exports
     files_by_dir: dict[str, list[str]] = {}
+    exports: list[dict[str, str]] = []
     total = 0
 
     for scan_root in scan_roots:
-        for fp in sorted(scan_root.rglob("*")):
-            if not fp.is_file():
-                continue
-            if fp.suffix not in exts:
-                continue
-
-            # 检查是否在忽略目录中
-            parts = fp.relative_to(root).parts
-            if any(part in _IGNORE_DIRS for part in parts):
-                continue
-
-            rel_dir = str(fp.parent.relative_to(root)).replace("\\", "/")
-            rel_file = fp.name
-
-            if rel_dir not in files_by_dir:
-                files_by_dir[rel_dir] = []
-            files_by_dir[rel_dir].append(rel_file)
-
-            total += 1
-            if total >= max_files:
-                break
-
+        _structure_walk(
+            scan_root, root, exts,
+            skip_dirs, gitignore_patterns,
+            files_by_dir, exports,
+            counter=[total], max_files=max_files,
+        )
+        total = sum(len(v) for v in files_by_dir.values())
         if total >= max_files:
             break
-
-    # 提取 TypeScript 类/接口摘要（轻量扫描）
-    exports: list[dict[str, str]] = []
-    for scan_root in scan_roots:
-        for fp in sorted(scan_root.rglob("*.ts")):
-            if not fp.is_file():
-                continue
-            parts = fp.relative_to(root).parts
-            if any(part in _IGNORE_DIRS for part in parts):
-                continue
-            try:
-                content = fp.read_text(encoding="utf-8", errors="replace")
-            except Exception:
-                continue
-
-            for line in content.splitlines():
-                stripped = line.strip()
-                if stripped.startswith("export class ") or \
-                   stripped.startswith("export interface ") or \
-                   stripped.startswith("export enum ") or \
-                   stripped.startswith("export abstract class "):
-                    name = stripped.split("{")[0].strip() if "{" in stripped else stripped
-                    exports.append({
-                        "file": str(fp.relative_to(root)).replace("\\", "/"),
-                        "declaration": name[:120],
-                    })
-
-            if len(exports) >= 200:
-                break
 
     result = {
         "project_root": str(root),
@@ -119,6 +84,82 @@ def get_project_structure_tool(
     }
 
     return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+def _structure_walk(
+    directory: Path,
+    root: Path,
+    exts: set[str],
+    skip_dirs: set[str],
+    gitignore_patterns: list[re.Pattern[str]],
+    files_by_dir: dict[str, list[str]],
+    exports: list[dict[str, str]],
+    counter: list[int],
+    max_files: int,
+) -> None:
+    """递归遍历目录，同时收集文件列表和 TS export 声明"""
+    if counter[0] >= max_files:
+        return
+
+    try:
+        entries = sorted(directory.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
+    except (PermissionError, OSError):
+        return
+
+    for entry in entries:
+        if counter[0] >= max_files:
+            return
+
+        if entry.name.startswith("."):
+            continue
+
+        try:
+            rel = entry.relative_to(root).as_posix()
+        except ValueError:
+            rel = entry.name
+
+        if entry.is_dir():
+            if entry.name in skip_dirs:
+                continue
+            if gitignore_patterns and _is_gitignored(entry.name, rel, gitignore_patterns):
+                continue
+            _structure_walk(
+                entry, root, exts,
+                skip_dirs, gitignore_patterns,
+                files_by_dir, exports,
+                counter, max_files,
+            )
+        elif entry.is_file():
+            if entry.suffix in _IGNORE_SUFFIXES:
+                continue
+            if gitignore_patterns and _is_gitignored(entry.name, rel, gitignore_patterns):
+                continue
+            if entry.suffix not in exts:
+                continue
+
+            rel_dir = str(entry.parent.relative_to(root)).replace("\\", "/")
+            if rel_dir not in files_by_dir:
+                files_by_dir[rel_dir] = []
+            files_by_dir[rel_dir].append(entry.name)
+            counter[0] += 1
+
+            # 顺便提取 TS export 声明
+            if entry.suffix == ".ts" and len(exports) < 200:
+                try:
+                    content = entry.read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    continue
+                for line in content.splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("export class ") or \
+                       stripped.startswith("export interface ") or \
+                       stripped.startswith("export enum ") or \
+                       stripped.startswith("export abstract class "):
+                        name = stripped.split("{")[0].strip() if "{" in stripped else stripped
+                        exports.append({
+                            "file": rel,
+                            "declaration": name[:120],
+                        })
 
 
 # LLM tool_use 工具定义
