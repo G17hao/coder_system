@@ -199,6 +199,33 @@ class TestListDirectory:
         assert "src/" in result
         assert "main.ts" in result
 
+    def test_max_entries_cap(self, tmp_path: Path) -> None:
+        """max_entries 达到上限时截断输出"""
+        from agent_system.tools.list_directory import list_directory_tool
+
+        # 创建 20 个文件
+        for i in range(20):
+            (tmp_path / f"file_{i:02d}.ts").write_text("", encoding="utf-8")
+
+        # 只允许 5 条
+        result = list_directory_tool(str(tmp_path), max_entries=5)
+        lines = result.splitlines()
+        file_lines = [ln for ln in lines if "file_" in ln]
+        assert len(file_lines) == 5
+        assert "已达到 5 条上限" in result
+        assert "截断" in result
+
+    def test_max_entries_not_triggered(self, tmp_path: Path) -> None:
+        """条目较少时不截断"""
+        from agent_system.tools.list_directory import list_directory_tool
+
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.ts").write_text("", encoding="utf-8")
+
+        result = list_directory_tool(str(tmp_path), max_entries=100)
+        assert "截断" not in result
+        assert "main.ts" in result
+
 
 # ── replace_in_file ────────────────────────────────────────────
 

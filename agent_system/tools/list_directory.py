@@ -93,6 +93,10 @@ def _is_gitignored(
 ) -> bool:
     """检查路径是否被 gitignore 规则匹配
 
+    gitignore 规则:
+    - 不含 / 的模式: 匹配任意层级的文件名 (如 ``*.log``)
+    - 含 / 的模式: 从根目录匹配完整相对路径 (如 ``assets/asset-db``)
+
     Args:
         entry_name: 文件/目录名
         rel_path: 相对于项目根目录的路径 (使用 / 分隔)
@@ -102,11 +106,8 @@ def _is_gitignored(
         True 表示应被忽略
     """
     for pat in gitignore_patterns:
-        # 匹配完整相对路径或仅文件名/目录名
+        # 完整匹配文件名或完整相对路径
         if pat.fullmatch(entry_name) or pat.fullmatch(rel_path):
-            return True
-        # 也匹配路径中的任意段
-        if pat.search(rel_path):
             return True
     return False
 
@@ -135,21 +136,28 @@ def _find_gitignore(start_dir: Path) -> list[re.Pattern[str]]:
     return []
 
 
+# 默认最大条目数 — 防止巨型目录产生超长输出
+_DEFAULT_MAX_ENTRIES = 500
+
+
 def list_directory_tool(
     path: str,
     max_depth: int = 3,
     include_files: bool = True,
     ignore_dirs: list[str] | None = None,
+    max_entries: int = _DEFAULT_MAX_ENTRIES,
 ) -> str:
     """列出目录树结构
 
     自动读取 .gitignore 规则，忽略被 git 排除的目录和文件。
+    当条目数超过 max_entries 时自动截断并提示剩余数量。
 
     Args:
         path: 目录绝对路径
         max_depth: 最大递归深度（默认 3）
         include_files: 是否包含文件（False 则只显示目录）
         ignore_dirs: 额外忽略的目录名列表
+        max_entries: 最大返回条目数（默认 500），超出部分截断
 
     Returns:
         缩进格式的目录树字符串
@@ -166,9 +174,15 @@ def list_directory_tool(
     gitignore_patterns = _find_gitignore(root)
 
     lines: list[str] = [f"{root.name}/"]
+    counter = [0]  # 用列表包装以便在递归中共享可变状态
     _walk(root, root, lines, depth=1, max_depth=max_depth,
           include_files=include_files, skip_dirs=skip_dirs,
-          gitignore_patterns=gitignore_patterns)
+          gitignore_patterns=gitignore_patterns,
+          counter=counter, max_entries=max_entries)
+
+    if counter[0] >= max_entries:
+        lines.append(f"\n... 已达到 {max_entries} 条上限，结果已截断。"
+                     f"可减小 max_depth 或设置 include_files=false 缩小范围。")
 
     return "\n".join(lines)
 
@@ -182,6 +196,8 @@ def _walk(
     include_files: bool,
     skip_dirs: set[str],
     gitignore_patterns: list[re.Pattern[str]],
+    counter: list[int],
+    max_entries: int,
 ) -> None:
     """递归构建目录树
 
@@ -194,17 +210,22 @@ def _walk(
         include_files: 是否包含文件
         skip_dirs: 硬编码忽略的目录名集合
         gitignore_patterns: .gitignore 编译后的正则列表
+        counter: 单元素列表，用于跨递归追踪已输出条目数
+        max_entries: 最大条目数上限
     """
-    if depth > max_depth:
+    if depth > max_depth or counter[0] >= max_entries:
         return
 
     indent = "  " * depth
     try:
         entries = sorted(directory.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
-    except PermissionError:
+    except (PermissionError, OSError):
         return
 
     for entry in entries:
+        if counter[0] >= max_entries:
+            return
+
         if entry.name.startswith(".") and entry.name not in (".gitkeep",):
             continue
 
@@ -220,14 +241,16 @@ def _walk(
             if gitignore_patterns and _is_gitignored(entry.name, rel, gitignore_patterns):
                 continue
             lines.append(f"{indent}{entry.name}/")
+            counter[0] += 1
             _walk(entry, root, lines, depth + 1, max_depth, include_files,
-                  skip_dirs, gitignore_patterns)
+                  skip_dirs, gitignore_patterns, counter, max_entries)
         elif include_files:
             if entry.suffix in _IGNORE_SUFFIXES:
                 continue
             if gitignore_patterns and _is_gitignored(entry.name, rel, gitignore_patterns):
                 continue
             lines.append(f"{indent}{entry.name}")
+            counter[0] += 1
 
 
 # LLM tool_use 工具定义
@@ -255,6 +278,11 @@ LIST_DIRECTORY_TOOL_DEFINITION = {
                 "type": "boolean",
                 "description": "是否包含文件（false 则只显示目录结构），默认 true",
                 "default": True,
+            },
+            "max_entries": {
+                "type": "integer",
+                "description": "最大返回条目数，默认 500。超出时截断并提示。",
+                "default": 500,
             },
         },
         "required": ["path"],
