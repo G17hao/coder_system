@@ -88,6 +88,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="输出详细日志",
     )
+    parser.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="恢复时将 failed 任务重置为 pending，允许重新执行",
+    )
     return parser
 
 
@@ -154,6 +159,8 @@ def main(argv: list[str] | None = None) -> int:
     # --resume: 断点恢复
     if args.resume:
         orch = Orchestrator.from_state(config)
+        if args.retry_failed:
+            orch.reset_failed_tasks()
         if args.task:
             target = next(
                 (t for t in orch.context.task_queue if t.id == args.task), None

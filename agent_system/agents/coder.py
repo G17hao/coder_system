@@ -69,16 +69,20 @@ class CoderToolExecutor:
     """Coder 可用的工具执行器"""
 
     def execute(self, name: str, tool_input: dict[str, Any]) -> str:
+        try:
+            return self._dispatch(name, tool_input)
+        except Exception as e:
+            return f"错误: 工具 {name} 执行异常: {type(e).__name__}: {e}"
+
+    def _dispatch(self, name: str, tool_input: dict[str, Any]) -> str:
+        """分发工具调用到具体实现"""
         if name == "read_file":
             from agent_system.tools.read_file import read_file_tool
-            try:
-                return read_file_tool(
-                    path=tool_input["path"],
-                    start=tool_input.get("start", 1),
-                    end=tool_input.get("end"),
-                )
-            except FileNotFoundError as e:
-                return f"错误: {e}"
+            return read_file_tool(
+                path=tool_input["path"],
+                start=tool_input.get("start", 1),
+                end=tool_input.get("end"),
+            )
 
         elif name == "search_file":
             from agent_system.tools.search_file import search_file_tool

@@ -24,7 +24,7 @@ class AgentConfig:
     budget_limit: int = 0  # Token 预算上限，0 表示不限制
     call_limit: int = 0  # API 调用次数上限，0 表示不限制
     llm_timeout: float = 300.0
-    llm_max_retries: int = 2
+    llm_max_retries: int = 4
 
 @dataclass
 class AgentContext:

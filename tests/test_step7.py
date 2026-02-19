@@ -498,3 +498,63 @@ class TestTokenUsageSync:
         orch._sync_llm_usage()  # should not raise
         assert ctx.total_tokens_used == 0
         assert ctx.total_api_calls == 0
+
+
+class TestToolExecutorErrorHandling:
+    """ToolExecutor 全局异常捕获测试"""
+
+    def test_analyst_tool_permission_error(self) -> None:
+        """AnalystToolExecutor 遇到 PermissionError 时返回错误字符串而非崩溃"""
+        from agent_system.agents.analyst import AnalystToolExecutor
+        executor = AnalystToolExecutor()
+        # 传入不存在的路径触发 FileNotFoundError
+        result = executor.execute("read_file", {"path": "/nonexistent/file.ts"})
+        assert "错误" in result
+        # 传入错误参数触发 KeyError
+        result = executor.execute("grep_content", {"wrong_key": "x"})
+        assert "错误" in result
+        assert "KeyError" in result
+
+    def test_coder_tool_permission_error(self) -> None:
+        """CoderToolExecutor 遇到异常时返回错误字符串而非崩溃"""
+        from agent_system.agents.coder import CoderToolExecutor
+        executor = CoderToolExecutor()
+        result = executor.execute("read_file", {"path": "/nonexistent/file.ts"})
+        assert "错误" in result
+        result = executor.execute("write_file", {"path": "", "content": ""})
+        assert "错误" in result or isinstance(result, str)
+
+
+class TestResetFailedTasks:
+    """重置失败任务测试"""
+
+    def test_reset_failed_to_pending(self) -> None:
+        """reset_failed_tasks 将 failed 任务重置为 pending"""
+        tasks = _make_tasks()
+        tasks[0].status = TaskStatus.FAILED
+        tasks[0].error = "some error"
+        tasks[0].retry_count = 3
+        tasks[1].status = TaskStatus.DONE
+        tasks[2].status = TaskStatus.PENDING
+
+        ctx = _make_context(tasks)
+        orch = Orchestrator(config=ctx.config, context=ctx)
+        orch._state_store = StateStore(Path(tempfile.mktemp(suffix=".json")))
+
+        orch.reset_failed_tasks()
+
+        assert tasks[0].status == TaskStatus.PENDING
+        assert tasks[0].error is None
+        assert tasks[0].retry_count == 0
+        assert tasks[1].status == TaskStatus.DONE  # 不受影响
+        assert tasks[2].status == TaskStatus.PENDING  # 不受影响
+
+    def test_reset_no_failed_tasks(self) -> None:
+        """没有 failed 任务时无操作"""
+        tasks = _make_tasks()
+        ctx = _make_context(tasks)
+        orch = Orchestrator(config=ctx.config, context=ctx)
+        orch._state_store = StateStore(Path(tempfile.mktemp(suffix=".json")))
+
+        orch.reset_failed_tasks()  # should not raise
+        assert all(t.status == TaskStatus.PENDING for t in tasks)

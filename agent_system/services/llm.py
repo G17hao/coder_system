@@ -48,7 +48,7 @@ class LLMService:
         temperature: float = 0.0,
         base_url: str = "",
         timeout: float = 300.0,
-        max_retries: int = 2,
+        max_retries: int = 4,
     ) -> None:
         client_kwargs: dict[str, Any] = {
             "api_key": api_key,
@@ -216,7 +216,7 @@ class LLMService:
                         f"第 {attempt}/{max_attempts} 次尝试"
                     )
                     if attempt < max_attempts:
-                        wait = min(10 * attempt, 30)
+                        wait = min(20 * attempt, 60)
                         logger.info(f"    [LLM] {wait}s 后重试...")
                         time.sleep(wait)
                 else:
