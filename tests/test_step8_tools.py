@@ -138,6 +138,67 @@ class TestListDirectory:
         assert "src/" in result
         assert "main.ts" not in result
 
+    def test_gitignore_dir(self, tmp_path: Path) -> None:
+        """通过 .gitignore 忽略目录"""
+        from agent_system.tools.list_directory import list_directory_tool
+
+        (tmp_path / ".gitignore").write_text("output\nlogs\n", encoding="utf-8")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.ts").write_text("", encoding="utf-8")
+        (tmp_path / "output").mkdir()
+        (tmp_path / "output" / "bundle.js").write_text("", encoding="utf-8")
+        (tmp_path / "logs").mkdir()
+        (tmp_path / "logs" / "debug.log").write_text("", encoding="utf-8")
+
+        result = list_directory_tool(str(tmp_path))
+        assert "src/" in result
+        assert "main.ts" in result
+        assert "output" not in result
+        assert "logs" not in result
+        assert "bundle.js" not in result
+        assert "debug.log" not in result
+
+    def test_gitignore_wildcard(self, tmp_path: Path) -> None:
+        """通过 .gitignore 通配符忽略文件"""
+        from agent_system.tools.list_directory import list_directory_tool
+
+        (tmp_path / ".gitignore").write_text("*.log\n*.tmp\n", encoding="utf-8")
+        (tmp_path / "app.ts").write_text("", encoding="utf-8")
+        (tmp_path / "debug.log").write_text("", encoding="utf-8")
+        (tmp_path / "cache.tmp").write_text("", encoding="utf-8")
+
+        result = list_directory_tool(str(tmp_path))
+        assert "app.ts" in result
+        assert "debug.log" not in result
+        assert "cache.tmp" not in result
+
+    def test_gitignore_comment_and_empty(self, tmp_path: Path) -> None:
+        """.gitignore 中的注释和空行被跳过"""
+        from agent_system.tools.list_directory import list_directory_tool
+
+        (tmp_path / ".gitignore").write_text(
+            "# this is a comment\n\ndist\n\n# another comment\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "src").mkdir()
+        (tmp_path / "dist").mkdir()
+        (tmp_path / "dist" / "out.js").write_text("", encoding="utf-8")
+
+        result = list_directory_tool(str(tmp_path))
+        assert "src/" in result
+        assert "dist" not in result
+
+    def test_no_gitignore(self, tmp_path: Path) -> None:
+        """没有 .gitignore 时正常工作"""
+        from agent_system.tools.list_directory import list_directory_tool
+
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.ts").write_text("", encoding="utf-8")
+
+        result = list_directory_tool(str(tmp_path))
+        assert "src/" in result
+        assert "main.ts" in result
+
 
 # ── replace_in_file ────────────────────────────────────────────
 
