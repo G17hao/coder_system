@@ -325,6 +325,9 @@ class LLMService:
                 f"tokens=+{response.input_tokens}in/+{response.output_tokens}out, "
                 f"耗时={call_elapsed:.1f}s"
             )
+            # 输出 LLM 回复的完整文本内容
+            if response.content:
+                logger.info(f"    [LLM] 回复内容:\n{response.content}")
             final_response = response
 
             if not response.tool_calls:
