@@ -483,11 +483,11 @@ class Orchestrator:
             f"你是一个 Git commit message 生成器。\n"
             f"请根据以下信息生成一条简洁专业的 Git commit message。\n\n"
             f"## 规则\n"
-            f"- 使用 Conventional Commits 格式: type(scope): description\n"
-            f"- type: feat/fix/refactor/chore 等\n"
+            f"- 使用 Conventional Commits 格式: type(scope): 中文描述\n"
+            f"- type 使用英文: feat/fix/refactor/chore 等\n"
+            f"- scope 和描述使用中文\n"
             f"- 第一行不超过 72 字符\n"
-            f"- 可以有正文部分，列出关键变更\n"
-            f"- 使用英文\n"
+            f"- 可以有正文部分，用中文列出关键变更\n"
             f"- 只输出 commit message 本身，不要其他内容\n\n"
             f"## 任务信息\n"
             f"- ID: {task.id}\n"
@@ -498,7 +498,7 @@ class Orchestrator:
 
         try:
             response = self._llm.call(
-                system_prompt="你是 Git commit message 生成器，只输出 commit message。",
+                system_prompt="你是 Git commit message 生成器，只输出 commit message，描述部分使用中文。",
                 messages=[{"role": "user", "content": prompt}],
             )
             msg = response.content.strip()
