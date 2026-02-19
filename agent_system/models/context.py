@@ -22,7 +22,8 @@ class AgentConfig:
     dry_run: bool = False
     max_dynamic_tasks: int = 10
     budget_limit: int = 500_000
-
+    llm_timeout: float = 180.0
+    llm_max_retries: int = 2
 
 @dataclass
 class AgentContext:

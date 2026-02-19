@@ -1,8 +1,9 @@
-"""Anthropic API 封装 — 含 token 计数"""
+"""Anthropic API 封装 — 含 token 计数、超时、重试"""
 
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
@@ -45,8 +46,14 @@ class LLMService:
         max_tokens: int = 8192,
         temperature: float = 0.0,
         base_url: str = "",
+        timeout: float = 180.0,
+        max_retries: int = 2,
     ) -> None:
-        client_kwargs: dict[str, Any] = {"api_key": api_key}
+        client_kwargs: dict[str, Any] = {
+            "api_key": api_key,
+            "timeout": timeout,
+            "max_retries": 0,  # SDK 层不重试，由 _call_with_retry 管理重试和日志
+        }
         if base_url:
             client_kwargs["base_url"] = base_url
         self._client = anthropic.Anthropic(**client_kwargs)
@@ -54,6 +61,8 @@ class LLMService:
         self._max_tokens = max_tokens
         self._temperature = temperature
         self._usage = TokenUsage()
+        self._timeout = timeout
+        self._max_retries = max_retries
 
     @property
     def usage(self) -> TokenUsage:
@@ -87,7 +96,8 @@ class LLMService:
         if tools:
             kwargs["tools"] = tools
 
-        response = self._client.messages.create(**kwargs)
+        # 带重试的 API 调用
+        response = self._call_with_retry(**kwargs)
 
         # 提取文本内容
         text_parts: list[str] = []
@@ -126,6 +136,88 @@ class LLMService:
 
         return result
 
+    def _call_with_retry(self, **kwargs: Any) -> Any:
+        """带重试和进度日志的 API 调用
+
+        超时或临时错误时自动重试，每次等待期间输出进度日志。
+
+        Returns:
+            Anthropic API 响应对象
+
+        Raises:
+            anthropic.APITimeoutError: 所有重试均超时
+            anthropic.APIError: 不可重试的 API 错误
+        """
+        last_error: Exception | None = None
+        max_attempts = self._max_retries + 1  # max_retries 是重试次数，总尝试=重试+1
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                start = time.time()
+                logger.info(
+                    f"    [LLM] API 调用 (第 {attempt}/{max_attempts} 次, "
+                    f"timeout={self._timeout}s)..."
+                )
+                response = self._client.messages.create(**kwargs)
+                elapsed = time.time() - start
+                logger.info(f"    [LLM] API 响应耗时 {elapsed:.1f}s")
+                return response
+
+            except anthropic.APITimeoutError as e:
+                elapsed = time.time() - start
+                last_error = e
+                logger.warning(
+                    f"    [LLM] API 超时 ({elapsed:.0f}s), "
+                    f"第 {attempt}/{max_attempts} 次尝试"
+                )
+                if attempt < max_attempts:
+                    wait = min(10 * attempt, 30)
+                    logger.info(f"    [LLM] {wait}s 后重试...")
+                    time.sleep(wait)
+
+            except anthropic.APIConnectionError as e:
+                elapsed = time.time() - start
+                last_error = e
+                logger.warning(
+                    f"    [LLM] 连接错误: {e}, "
+                    f"第 {attempt}/{max_attempts} 次尝试"
+                )
+                if attempt < max_attempts:
+                    wait = min(10 * attempt, 30)
+                    logger.info(f"    [LLM] {wait}s 后重试...")
+                    time.sleep(wait)
+
+            except anthropic.RateLimitError as e:
+                elapsed = time.time() - start
+                last_error = e
+                logger.warning(
+                    f"    [LLM] 速率限制: {e}, "
+                    f"第 {attempt}/{max_attempts} 次尝试"
+                )
+                if attempt < max_attempts:
+                    wait = min(30 * attempt, 60)
+                    logger.info(f"    [LLM] {wait}s 后重试...")
+                    time.sleep(wait)
+
+            except anthropic.APIStatusError as e:
+                # 5xx 服务端错误可重试，4xx 直接抛出
+                if e.status_code >= 500:
+                    last_error = e
+                    logger.warning(
+                        f"    [LLM] 服务端错误 {e.status_code}: {e.message}, "
+                        f"第 {attempt}/{max_attempts} 次尝试"
+                    )
+                    if attempt < max_attempts:
+                        wait = min(10 * attempt, 30)
+                        logger.info(f"    [LLM] {wait}s 后重试...")
+                        time.sleep(wait)
+                else:
+                    raise
+
+        assert last_error is not None
+        logger.error(f"    [LLM] 所有 {max_attempts} 次尝试均失败: {last_error}")
+        raise last_error
+
     def call_with_tools_loop(
         self,
         system_prompt: str,
@@ -162,14 +254,18 @@ class LLMService:
 
         for iteration in range(max_iterations):
             logger.info(f"    [LLM] 第 {iteration + 1}/{max_iterations} 轮对话...")
+            logger.info(f"    [LLM] 等待 API 响应中 (timeout={self._timeout}s)...")
+            call_start = time.time()
             response = self.call(
                 system_prompt, current_messages, tools,
                 conversation_log=conversation_log,
             )
+            call_elapsed = time.time() - call_start
             logger.info(
                 f"    [LLM] 响应: stop={response.stop_reason}, "
                 f"tools={len(response.tool_calls)}, "
-                f"tokens=+{response.input_tokens}in/+{response.output_tokens}out"
+                f"tokens=+{response.input_tokens}in/+{response.output_tokens}out, "
+                f"耗时={call_elapsed:.1f}s"
             )
             final_response = response
 

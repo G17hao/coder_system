@@ -358,6 +358,8 @@ class Orchestrator:
             max_tokens=self._config.max_tokens,
             temperature=self._config.temperature,
             base_url=base_url,
+            timeout=self._config.llm_timeout,
+            max_retries=self._config.llm_max_retries,
         )
 
     def _save_state(self) -> None:
