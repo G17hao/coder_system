@@ -313,6 +313,8 @@ class Orchestrator:
             task.status = TaskStatus.FAILED
             task.error = str(e)
             logger.error(f"  [error] 任务 {task.id} 异常: {e}")
+            if not self._config.dry_run:
+                self._revert_changes()
             self._sync_llm_usage()
             self._run_reflection(task)
 

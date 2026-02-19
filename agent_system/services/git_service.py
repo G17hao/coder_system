@@ -85,6 +85,8 @@ class GitService:
             self._run("checkout", "HEAD", "--", *paths)
         else:
             self._run("checkout", "HEAD", "--", ".")
+            # 同时清理 agent 创建的未跟踪新文件
+            self._run("clean", "-fd")
 
     def has_changes(self) -> bool:
         """是否有未提交的变更"""
