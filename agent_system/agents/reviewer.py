@@ -196,8 +196,9 @@ class Reviewer(BaseAgent):
 
                 elif name == "ts_check":
                     from agent_system.tools.ts_check import ts_check_tool
+                    # 强制使用实际项目路径，忽略 LLM 传入的路径
                     result = ts_check_tool(
-                        project_root=tool_input["project_root"],
+                        project_root=context.project.project_root,
                         tsconfig=tool_input.get("tsconfig", "tsconfig.json"),
                     )
                     return json.dumps(result.to_dict(), ensure_ascii=False)
