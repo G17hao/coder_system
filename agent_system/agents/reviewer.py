@@ -212,6 +212,7 @@ class Reviewer(BaseAgent):
             max_iterations=300,
             soft_limit=30,
             conversation_log=self._active_conversation_log,
+            label=f"Reviewer/{task.id}",
         )
 
         return self._parse_review_result(response.content)

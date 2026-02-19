@@ -76,6 +76,7 @@ class LLMService:
         messages: list[dict[str, str]],
         tools: list[dict[str, Any]] | None = None,
         conversation_log: ConversationLog | None = None,
+        label: str = "",
     ) -> LLMResponse:
         """调用 Claude API
 
@@ -84,6 +85,7 @@ class LLMService:
             messages: 消息列表 [{"role": "user", "content": "..."}]
             tools: 工具定义列表（可选）
             conversation_log: 可选的对话日志记录器
+            label: 调用标签，用于日志标识（如 "Analyst/T0.1"）
 
         Returns:
             LLMResponse 包含内容、工具调用和 token 统计
@@ -99,7 +101,7 @@ class LLMService:
             kwargs["tools"] = tools
 
         # 带重试的 API 调用
-        response = self._call_with_retry(**kwargs)
+        response = self._call_with_retry(label=label, **kwargs)
 
         # 提取文本内容
         text_parts: list[str] = []
@@ -138,12 +140,15 @@ class LLMService:
 
         return result
 
-    def _call_with_retry(self, **kwargs: Any) -> Any:
+    def _call_with_retry(self, label: str = "", **kwargs: Any) -> Any:
         """带重试和进度日志的流式 API 调用
 
         使用 streaming 模式，超时计时器会在每次收到数据时重置，
         只有服务器完全停止发送超过 timeout 秒才会超时。
         超时或临时错误时自动重试。
+
+        Args:
+            label: 日志标签（如 "Analyst/T0.1"）
 
         Returns:
             Anthropic API 响应对象 (Message)
@@ -154,14 +159,13 @@ class LLMService:
         """
         last_error: Exception | None = None
         max_attempts = self._max_retries + 1
+        tag = f"[{label}]" if label else "[LLM]"
 
         for attempt in range(1, max_attempts + 1):
             try:
                 start = time.time()
-                logger.info(
-                    f"    [LLM] API 调用 (第 {attempt}/{max_attempts} 次, "
-                    f"streaming, per-chunk timeout={self._timeout}s)..."
-                )
+                if attempt > 1:
+                    logger.info(f"    {tag} 重试 ({attempt}/{max_attempts})...")
 
                 # 使用 streaming — 实时输出文本到控制台
                 with self._client.messages.stream(**kwargs) as stream:
@@ -174,7 +178,7 @@ class LLMService:
                                 if hasattr(delta, "text") and delta.text:
                                     if not streamed_text:
                                         # 首个文本 chunk: 打印前缀
-                                        sys.stdout.write("\n    [LLM] ")
+                                        sys.stdout.write(f"\n    {tag} ")
                                         streamed_text = True
                                     sys.stdout.write(delta.text)
                                     sys.stdout.flush()
@@ -185,62 +189,46 @@ class LLMService:
 
                 elapsed = time.time() - start
                 self._usage.total_calls += 1
-                logger.info(f"    [LLM] API 响应耗时 {elapsed:.1f}s (累计调用 {self._usage.total_calls} 次)")
+                logger.debug(f"    {tag} 响应 {elapsed:.1f}s (累计 {self._usage.total_calls} 次)")
                 return response
 
             except anthropic.APITimeoutError as e:
                 elapsed = time.time() - start
                 last_error = e
-                logger.warning(
-                    f"    [LLM] API 超时 ({elapsed:.0f}s), "
-                    f"第 {attempt}/{max_attempts} 次尝试"
-                )
+                logger.warning(f"    {tag} 超时 ({elapsed:.0f}s) [{attempt}/{max_attempts}]")
                 if attempt < max_attempts:
                     wait = min(10 * attempt, 30)
-                    logger.info(f"    [LLM] {wait}s 后重试...")
                     time.sleep(wait)
 
             except anthropic.APIConnectionError as e:
                 elapsed = time.time() - start
                 last_error = e
-                logger.warning(
-                    f"    [LLM] 连接错误: {e}, "
-                    f"第 {attempt}/{max_attempts} 次尝试"
-                )
+                logger.warning(f"    {tag} 连接错误 [{attempt}/{max_attempts}]: {e}")
                 if attempt < max_attempts:
                     wait = min(10 * attempt, 30)
-                    logger.info(f"    [LLM] {wait}s 后重试...")
                     time.sleep(wait)
 
             except anthropic.RateLimitError as e:
                 elapsed = time.time() - start
                 last_error = e
-                logger.warning(
-                    f"    [LLM] 速率限制: {e}, "
-                    f"第 {attempt}/{max_attempts} 次尝试"
-                )
+                logger.warning(f"    {tag} 速率限制 [{attempt}/{max_attempts}]")
                 if attempt < max_attempts:
                     wait = min(30 * attempt, 60)
-                    logger.info(f"    [LLM] {wait}s 后重试...")
                     time.sleep(wait)
 
             except anthropic.APIStatusError as e:
                 # 5xx 服务端错误可重试，4xx 直接抛出
                 if e.status_code >= 500:
                     last_error = e
-                    logger.warning(
-                        f"    [LLM] 服务端错误 {e.status_code}: {e.message}, "
-                        f"第 {attempt}/{max_attempts} 次尝试"
-                    )
+                    logger.warning(f"    {tag} 服务端 {e.status_code} [{attempt}/{max_attempts}]")
                     if attempt < max_attempts:
                         wait = min(20 * attempt, 60)
-                        logger.info(f"    [LLM] {wait}s 后重试...")
                         time.sleep(wait)
                 else:
                     raise
 
         assert last_error is not None
-        logger.error(f"    [LLM] 所有 {max_attempts} 次尝试均失败: {last_error}")
+        logger.error(f"    {tag} 所有 {max_attempts} 次尝试均失败: {last_error}")
         raise last_error
 
     def call_with_tools_loop(
@@ -252,6 +240,7 @@ class LLMService:
         max_iterations: int = 300,
         soft_limit: int = 30,
         conversation_log: ConversationLog | None = None,
+        label: str = "",
     ) -> LLMResponse:
         """带工具调用循环的 LLM 调用
 
@@ -274,6 +263,9 @@ class LLMService:
         current_messages = list(messages)
         final_response: LLMResponse | None = None
         reflection_done = False
+        tag = f"[{label}]" if label else "[LLM]"
+
+        logger.info(f"    {tag} 开始工具循环 (上限 {max_iterations} 轮, 软限制 {soft_limit} 轮)")
 
         # 初始化对话日志
         if conversation_log is not None:
@@ -286,9 +278,7 @@ class LLMService:
             # 软限制反思检查：达到 soft_limit 时注入反思提示
             if iteration == soft_limit and not reflection_done:
                 reflection_done = True
-                logger.warning(
-                    f"    [LLM] 已达软限制 ({soft_limit} 轮)，注入反思检查..."
-                )
+                logger.warning(f"    {tag} 已达软限制 ({soft_limit} 轮)，注入反思检查...")
                 reflection_prompt = (
                     f"[系统提醒] 你已经进行了 {soft_limit} 轮工具调用。请暂停并反思：\n"
                     f"1. 你当前的任务进展如何？已完成了哪些部分？\n"
@@ -305,10 +295,9 @@ class LLMService:
                 reflection_response = self.call(
                     system_prompt, current_messages, tools=None,
                     conversation_log=conversation_log,
+                    label=f"{label}/反思" if label else "反思",
                 )
-                logger.info(
-                    f"    [LLM] 反思结果: {reflection_response.content[:200]}"
-                )
+                logger.info(f"    {tag} 反思结果: {reflection_response.content[:200]}")
 
                 # 将反思回复加入消息历史
                 current_messages.append({
@@ -317,35 +306,30 @@ class LLMService:
                 })
 
                 if "CONTINUE" in reflection_response.content.upper():
-                    logger.info(
-                        f"    [LLM] LLM 确认继续，放行至硬上限 ({max_iterations} 轮)"
-                    )
+                    logger.info(f"    {tag} LLM 确认继续，放行至硬上限")
                     continue
                 else:
-                    logger.info(
-                        f"    [LLM] LLM 选择停止或输出最终结果"
-                    )
+                    logger.info(f"    {tag} LLM 选择停止")
                     final_response = reflection_response
                     break
 
-            logger.info(f"    [LLM] 第 {iteration + 1}/{max_iterations} 轮对话...")
-            logger.info(f"    [LLM] 等待 API 响应中 (timeout={self._timeout}s)...")
             call_start = time.time()
             response = self.call(
                 system_prompt, current_messages, tools,
                 conversation_log=conversation_log,
+                label=label,
             )
             call_elapsed = time.time() - call_start
             logger.info(
-                f"    [LLM] 响应: stop={response.stop_reason}, "
-                f"tools={len(response.tool_calls)}, "
-                f"tokens=+{response.input_tokens}in/+{response.output_tokens}out, "
-                f"耗时={call_elapsed:.1f}s"
+                f"    {tag} 轮 {iteration + 1} | "
+                f"tools={len(response.tool_calls)} | "
+                f"+{response.input_tokens}in/+{response.output_tokens}out | "
+                f"{call_elapsed:.1f}s"
             )
             final_response = response
 
             if not response.tool_calls:
-                logger.info(f"    [LLM] 对话结束 (无工具调用)")
+                logger.info(f"    {tag} 完成 (共 {iteration + 1} 轮)")
                 break
 
             # 构建 assistant 消息（包含 tool_use blocks）
@@ -365,11 +349,11 @@ class LLMService:
             tool_results: list[dict[str, Any]] = []
             for tc in response.tool_calls:
                 tool_name = tc["name"]
-                tool_input_summary = str(tc["input"])[:200]
-                logger.info(f"    [tool] {tool_name}({tool_input_summary})")
+                tool_input_summary = str(tc["input"])[:120]
+                logger.info(f"    {tag} 🔧 {tool_name}({tool_input_summary})")
                 result = tool_executor.execute(tc["name"], tc["input"])
                 result_str = str(result)
-                logger.debug(f"    [tool] {tool_name} -> {result_str[:300]}")
+                logger.debug(f"    {tag} 🔧 {tool_name} -> {result_str[:300]}")
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tc["id"],
@@ -386,12 +370,10 @@ class LLMService:
 
         else:
             # for 循环正常结束 = 达到硬上限
-            logger.error(
-                f"    [LLM] 达到硬上限 ({max_iterations} 轮)，强制中断！"
-            )
+            logger.error(f"    {tag} 达到硬上限 ({max_iterations} 轮)，强制中断！")
 
         logger.info(
-            f"    [LLM] 工具循环结束, 累计 tokens: {self._usage.total_input}in/{self._usage.total_output}out"
+            f"    {tag} 循环结束 | 累计 {self._usage.total_input}in/{self._usage.total_output}out"
         )
 
         assert final_response is not None

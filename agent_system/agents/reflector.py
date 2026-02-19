@@ -92,6 +92,7 @@ class Reflector(BaseAgent):
             system_prompt=system_prompt,
             messages=[{"role": "user", "content": user_message}],
             conversation_log=kwargs.get("conversation_log"),
+            label=f"Reflector/{task.id}",
         )
 
         report = self._parse_report(task, response.content)

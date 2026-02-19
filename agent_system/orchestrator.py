@@ -500,6 +500,7 @@ class Orchestrator:
             response = self._llm.call(
                 system_prompt="你是 Git commit message 生成器，只输出 commit message，描述部分使用中文。",
                 messages=[{"role": "user", "content": prompt}],
+                label=f"CommitMsg/{task.id}",
             )
             msg = response.content.strip()
             # 清理可能的 markdown 包裹

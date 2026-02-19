@@ -133,6 +133,7 @@ class Analyst(BaseAgent):
             max_iterations=300,
             soft_limit=30,
             conversation_log=kwargs.get("conversation_log"),
+            label=f"Analyst/{task.id}",
         )
 
         return response.content

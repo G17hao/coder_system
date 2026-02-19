@@ -189,6 +189,7 @@ class Coder(BaseAgent):
             max_iterations=300,
             soft_limit=40,
             conversation_log=kwargs.get("conversation_log"),
+            label=f"Coder/{task.id}",
         )
 
         return CodeChanges.from_json(response.content)
