@@ -15,6 +15,7 @@ from agent_system.agents.reviewer import Reviewer
 from agent_system.models.context import AgentConfig, AgentContext
 from agent_system.models.project_config import ProjectConfig
 from agent_system.models.task import ReviewResult, Task, TaskStatus
+from agent_system.services.conversation_logger import ConversationLogger
 from agent_system.services.file_service import FileService
 from agent_system.services.git_service import GitService, GitError
 from agent_system.services.llm import LLMService
@@ -58,6 +59,7 @@ class Orchestrator:
         self._git: GitService | None = None
         self._file_service: FileService | None = None
         self._reflections_dir: Path | None = None
+        self._conversation_logger: ConversationLogger | None = None
 
     @property
     def context(self) -> AgentContext:
@@ -86,6 +88,10 @@ class Orchestrator:
         # 反思目录
         self._reflections_dir = agent_system_dir / "reflections"
         self._reflections_dir.mkdir(parents=True, exist_ok=True)
+
+        # 对话日志目录
+        conversations_dir = agent_system_dir / "conversations"
+        self._conversation_logger = ConversationLogger(conversations_dir)
 
         try:
             self._git = GitService(project_root)
@@ -215,7 +221,11 @@ class Orchestrator:
             if task.analysis_cache is None:
                 logger.info(f"  [分析] 分析中...")
                 if not self._config.dry_run:
-                    report = self._analyst.execute(task, self._context)
+                    conv_log = self._start_conversation(task, "analyst")
+                    report = self._analyst.execute(
+                        task, self._context, conversation_log=conv_log,
+                    )
+                    self._save_conversation()
                     task.analysis_cache = report
                 else:
                     task.analysis_cache = '{"dry_run": true}'
@@ -225,11 +235,14 @@ class Orchestrator:
                 # 5. 编码阶段
                 logger.info(f"  [编码] 编码中... (尝试 {task.retry_count + 1}/{task.max_retries})")
                 if not self._config.dry_run:
+                    conv_log = self._start_conversation(task, "coder")
                     changes = self._coder.execute(
                         task,
                         self._context,
                         analysis_report=task.analysis_cache or "",
+                        conversation_log=conv_log,
                     )
+                    self._save_conversation()
                     task.coder_output = str(changes.to_dict())
                 else:
                     changes = CodeChanges(files=[])
@@ -242,9 +255,12 @@ class Orchestrator:
                 # 7. 审查阶段
                 logger.info(f"  [审查] 审查中...")
                 if not self._config.dry_run:
+                    conv_log = self._start_conversation(task, "reviewer")
                     result = self._reviewer.execute(
                         task, self._context, code_changes=changes,
+                        conversation_log=conv_log,
                     )
+                    self._save_conversation()
                 else:
                     result = ReviewResult(passed=True)
 
@@ -389,12 +405,38 @@ class Orchestrator:
 
         try:
             logger.info(f"  [反思] 反思中...")
-            report = self._reflector.execute(task, self._context)
+            conv_log = self._start_conversation(task, "reflector")
+            report = self._reflector.execute(
+                task, self._context, conversation_log=conv_log,
+            )
+            self._save_conversation()
             if self._reflections_dir:
                 save_reflection(report, self._reflections_dir)
         except Exception as e:
             # 反思失败不应影响主流程
             logger.warning(f"  [反思] 反思失败 (不影响任务结果): {e}")
+
+    def _start_conversation(self, task: Task, agent_name: str) -> Any:
+        """开始一个新的对话记录
+
+        Args:
+            task: 当前任务
+            agent_name: Agent 名称
+
+        Returns:
+            ConversationLog 实例，或无日志器时返回 None
+        """
+        if self._conversation_logger is None:
+            return None
+        return self._conversation_logger.start(task.id, agent_name)
+
+    def _save_conversation(self) -> None:
+        """保存当前对话日志"""
+        if self._conversation_logger is None:
+            return
+        filepath = self._conversation_logger.finish_and_save()
+        if filepath:
+            logger.info(f"    [对话] 已保存: {filepath}")
 
     def _try_unlock_blocked(self) -> bool:
         """尝试解锁 blocked 任务"""

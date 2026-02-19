@@ -42,6 +42,8 @@ class Reviewer(BaseAgent):
         Returns:
             ReviewResult 审查结果
         """
+        self._active_conversation_log = kwargs.get("conversation_log")
+
         # 1. 执行 reviewCommands
         command_issues = self._run_review_commands(context)
 
@@ -207,6 +209,7 @@ class Reviewer(BaseAgent):
             tools=tools,
             tool_executor=ReviewToolExecutor(),
             max_iterations=5,
+            conversation_log=self._active_conversation_log,
         )
 
         return self._parse_review_result(response.content)

@@ -91,6 +91,7 @@ class Reflector(BaseAgent):
         response = self._llm.call(
             system_prompt=system_prompt,
             messages=[{"role": "user", "content": user_message}],
+            conversation_log=kwargs.get("conversation_log"),
         )
 
         report = self._parse_report(task, response.content)

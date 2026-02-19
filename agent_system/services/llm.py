@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import anthropic
+
+if TYPE_CHECKING:
+    from agent_system.services.conversation_logger import ConversationLog
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -58,6 +64,7 @@ class LLMService:
         system_prompt: str,
         messages: list[dict[str, str]],
         tools: list[dict[str, Any]] | None = None,
+        conversation_log: ConversationLog | None = None,
     ) -> LLMResponse:
         """调用 Claude API
 
@@ -65,6 +72,7 @@ class LLMService:
             system_prompt: 系统提示词
             messages: 消息列表 [{"role": "user", "content": "..."}]
             tools: 工具定义列表（可选）
+            conversation_log: 可选的对话日志记录器
 
         Returns:
             LLMResponse 包含内容、工具调用和 token 统计
@@ -100,13 +108,23 @@ class LLMService:
         self._usage.total_input += input_tokens
         self._usage.total_output += output_tokens
 
-        return LLMResponse(
+        result = LLMResponse(
             content="\n".join(text_parts),
             tool_calls=tool_calls,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             stop_reason=response.stop_reason or "",
         )
+
+        # 记录到对话日志
+        if conversation_log is not None:
+            conversation_log.add_assistant(
+                content=result.content,
+                tool_calls=result.tool_calls or None,
+            )
+            conversation_log.add_token_usage(input_tokens, output_tokens)
+
+        return result
 
     def call_with_tools_loop(
         self,
@@ -115,6 +133,7 @@ class LLMService:
         tools: list[dict[str, Any]],
         tool_executor: Any,
         max_iterations: int = 10,
+        conversation_log: ConversationLog | None = None,
     ) -> LLMResponse:
         """带工具调用循环的 LLM 调用
 
@@ -126,6 +145,7 @@ class LLMService:
             tools: 工具定义
             tool_executor: 工具执行器，需要有 execute(name, input) -> str 方法
             max_iterations: 最大迭代次数
+            conversation_log: 可选的对话日志记录器
 
         Returns:
             最终的 LLMResponse
@@ -133,11 +153,28 @@ class LLMService:
         current_messages = list(messages)
         final_response: LLMResponse | None = None
 
-        for _ in range(max_iterations):
-            response = self.call(system_prompt, current_messages, tools)
+        # 初始化对话日志
+        if conversation_log is not None:
+            conversation_log.add_system(system_prompt)
+            for msg in messages:
+                if msg.get("role") == "user":
+                    conversation_log.add_user(msg.get("content", ""))
+
+        for iteration in range(max_iterations):
+            logger.info(f"    [LLM] 第 {iteration + 1}/{max_iterations} 轮对话...")
+            response = self.call(
+                system_prompt, current_messages, tools,
+                conversation_log=conversation_log,
+            )
+            logger.info(
+                f"    [LLM] 响应: stop={response.stop_reason}, "
+                f"tools={len(response.tool_calls)}, "
+                f"tokens=+{response.input_tokens}in/+{response.output_tokens}out"
+            )
             final_response = response
 
             if not response.tool_calls:
+                logger.info(f"    [LLM] 对话结束 (无工具调用)")
                 break
 
             # 构建 assistant 消息（包含 tool_use blocks）
@@ -156,13 +193,29 @@ class LLMService:
             # 执行工具并构建 tool_result 消息
             tool_results: list[dict[str, Any]] = []
             for tc in response.tool_calls:
+                tool_name = tc["name"]
+                tool_input_summary = str(tc["input"])[:200]
+                logger.info(f"    [tool] {tool_name}({tool_input_summary})")
                 result = tool_executor.execute(tc["name"], tc["input"])
+                result_str = str(result)
+                logger.debug(f"    [tool] {tool_name} -> {result_str[:300]}")
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tc["id"],
-                    "content": str(result),
+                    "content": result_str,
                 })
+                # 记录工具结果
+                if conversation_log is not None:
+                    conversation_log.add_tool_result(
+                        tool_use_id=tc["id"],
+                        tool_name=tc["name"],
+                        result=result_str,
+                    )
             current_messages.append({"role": "user", "content": tool_results})
+
+        logger.info(
+            f"    [LLM] 工具循环结束, 累计 tokens: {self._usage.total_input}in/{self._usage.total_output}out"
+        )
 
         assert final_response is not None
         return final_response

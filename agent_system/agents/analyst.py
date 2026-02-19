@@ -123,6 +123,7 @@ class Analyst(BaseAgent):
             tools=tools,
             tool_executor=tool_executor,
             max_iterations=15,
+            conversation_log=kwargs.get("conversation_log"),
         )
 
         return response.content
