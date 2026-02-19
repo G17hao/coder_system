@@ -187,7 +187,7 @@ class Coder(BaseAgent):
             tools=tools,
             tool_executor=tool_executor,
             max_iterations=300,
-            soft_limit=30,
+            soft_limit=40,
             conversation_log=kwargs.get("conversation_log"),
         )
 

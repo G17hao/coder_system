@@ -131,7 +131,7 @@ class Analyst(BaseAgent):
             tools=tools,
             tool_executor=tool_executor,
             max_iterations=300,
-            soft_limit=15,
+            soft_limit=30,
             conversation_log=kwargs.get("conversation_log"),
         )
 
