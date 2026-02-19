@@ -10,6 +10,7 @@ from typing import Any
 from agent_system.agents.analyst import Analyst
 from agent_system.agents.coder import Coder, CodeChanges
 from agent_system.agents.planner import CyclicDependencyError, DependencyStatus, Planner
+from agent_system.agents.reflector import Reflector, save_reflection
 from agent_system.agents.reviewer import Reviewer
 from agent_system.models.context import AgentConfig, AgentContext
 from agent_system.models.project_config import ProjectConfig
@@ -40,6 +41,7 @@ class Orchestrator:
         analyst: Analyst | None = None,
         coder: Coder | None = None,
         reviewer: Reviewer | None = None,
+        reflector: Reflector | None = None,
         context: AgentContext | None = None,
     ) -> None:
         self._config = config
@@ -50,10 +52,12 @@ class Orchestrator:
         self._analyst = analyst
         self._coder = coder
         self._reviewer = reviewer
+        self._reflector = reflector
 
         self._state_store: StateStore | None = None
         self._git: GitService | None = None
         self._file_service: FileService | None = None
+        self._reflections_dir: Path | None = None
 
     @property
     def context(self) -> AgentContext:
@@ -73,10 +77,15 @@ class Orchestrator:
         project_root = self._context.project.project_root
 
         # 2. 初始化服务
-        state_dir = Path(project_root) / "agent-system" / "state"
+        agent_system_dir = Path(project_root) / "agent-system"
+        state_dir = agent_system_dir / "state"
         state_dir.mkdir(parents=True, exist_ok=True)
         self._state_store = StateStore(state_dir / "tasks.json")
         self._file_service = FileService(project_root)
+
+        # 反思目录
+        self._reflections_dir = agent_system_dir / "reflections"
+        self._reflections_dir.mkdir(parents=True, exist_ok=True)
 
         try:
             self._git = GitService(project_root)
@@ -91,6 +100,7 @@ class Orchestrator:
             self._analyst = Analyst(llm=llm)
             self._coder = Coder(llm=llm)
             self._reviewer = Reviewer(llm=llm)
+            self._reflector = Reflector(llm=llm)
 
     def init_tasks(self) -> None:
         """从项目配置的 initial_tasks 创建初始任务队列"""
@@ -247,6 +257,7 @@ class Orchestrator:
                     task.commit_hash = commit_hash
                     self._context.completed_tasks[task.id] = task
                     logger.info(f"  [done] 任务 {task.id} 完成 (commit: {commit_hash or 'N/A'})")
+                    self._run_reflection(task)
                     return
                 else:
                     # 失败: 撤销文件变更 + 重试
@@ -263,6 +274,7 @@ class Orchestrator:
                 task.review_result.issues if task.review_result else ["超过最大重试次数"]
             )
             logger.error(f"  [failed] 任务 {task.id} 失败: {task.error}")
+            self._run_reflection(task)
 
         except Exception as e:
             task.status = TaskStatus.FAILED
@@ -365,6 +377,24 @@ class Orchestrator:
             self._git.checkout_files()
         except GitError as e:
             logger.warning(f"Git revert 失败: {e}")
+
+    def _run_reflection(self, task: Task) -> None:
+        """执行反思并保存报告
+
+        Args:
+            task: 刚完成或失败的任务
+        """
+        if self._config.dry_run or self._reflector is None or self._context is None:
+            return
+
+        try:
+            logger.info(f"  [反思] 反思中...")
+            report = self._reflector.execute(task, self._context)
+            if self._reflections_dir:
+                save_reflection(report, self._reflections_dir)
+        except Exception as e:
+            # 反思失败不应影响主流程
+            logger.warning(f"  [反思] 反思失败 (不影响任务结果): {e}")
 
     def _try_unlock_blocked(self) -> bool:
         """尝试解锁 blocked 任务"""
