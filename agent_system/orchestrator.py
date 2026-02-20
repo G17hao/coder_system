@@ -293,10 +293,12 @@ class Orchestrator:
                             conversation_log=conv_log,
                         )
                         self._save_conversation()
+                        self._refresh_task_modified_files(task, changes)
                         task.coder_output = str(changes.to_dict())
                         self._sync_llm_usage()
                     else:
                         changes = CodeChanges(files=[])
+                        self._refresh_task_modified_files(task, changes)
                         task.coder_output = "{dry_run: true}"
 
                     # 5.1 编码空输出检测 → 跳过审查，直接重试
@@ -506,6 +508,33 @@ class Orchestrator:
                 suggestions.append("请逐条对齐分析 gaps，确保相关文件已创建或在本次改动中覆盖")
 
         return (issues, suggestions)
+
+    def _refresh_task_modified_files(self, task: Task, changes: CodeChanges) -> None:
+        """累计记录任务级别的变更文件，并同步到 review_files。"""
+        if not self._context:
+            return
+
+        normalized_existing = [
+            self._normalize_file_path(path)
+            for path in task.modified_files
+            if self._normalize_file_path(path)
+        ]
+        existing_set = set(normalized_existing)
+
+        normalized_new = [
+            self._normalize_file_path(f.path)
+            for f in changes.files
+            if getattr(f, "path", None)
+        ]
+        for path in normalized_new:
+            if path and path not in existing_set:
+                existing_set.add(path)
+                normalized_existing.append(path)
+
+        task.modified_files = normalized_existing
+
+        if not changes.review_files:
+            changes.review_files = list(task.modified_files)
 
     def _create_subtasks_from_analysis(self, task: Task) -> int:
         """从分析报告中提取子任务并写入队列。"""

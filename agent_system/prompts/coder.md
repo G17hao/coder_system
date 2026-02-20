@@ -4,7 +4,7 @@
 
 1. 根据 Analyst 的分析报告生成或修改代码文件
 2. **严格遵循**编码规范，不得偏离
-3. 输出文件变更路径与动作（create/modify/delete），供Orchestrator审查
+3. 输出文件变更路径与动作（create/modify/delete/none），供Orchestrator审查。
 
 ## 编码规范
 
@@ -69,7 +69,7 @@
   "files": [
     {
       "path": "相对路径",
-      "action": "create|modify|delete"
+      "action": "create|modify|delete|none"
     }
   ],
   "review_files": ["需要审查完整内容的文件路径"]

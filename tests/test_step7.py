@@ -358,6 +358,37 @@ class TestCLI:
         assert "agent-system" in result.stdout
 
 
+class TestModifiedFilesTracking:
+    """任务级别累计变更文件跟踪"""
+
+    def test_refresh_task_modified_files(self) -> None:
+        """累计合并变更文件，并在空输出时回填 review_files"""
+        planner, analyst, coder, reviewer = _make_mock_agents()
+        task = Task(id="T0", title="Test", description="desc")
+        ctx = _make_context([task], dry_run=True)
+
+        orch = Orchestrator(
+            config=ctx.config,
+            planner=planner,
+            analyst=analyst,
+            coder=coder,
+            reviewer=reviewer,
+            context=ctx,
+        )
+
+        task.modified_files = ["src/a.ts"]
+        empty_changes = CodeChanges(files=[])
+        orch._refresh_task_modified_files(task, empty_changes)
+
+        assert empty_changes.review_files == ["src/a.ts"]
+
+        new_changes = CodeChanges(files=[FileChange(path="src/b.ts", action="modify")])
+        orch._refresh_task_modified_files(task, new_changes)
+
+        assert task.modified_files == ["src/a.ts", "src/b.ts"]
+        assert new_changes.review_files == ["src/a.ts", "src/b.ts"]
+
+
 class TestStatusReport:
     """状态报告测试"""
 
