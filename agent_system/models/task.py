@@ -53,7 +53,7 @@ class Task:
     coder_output: str | None = None
     review_result: ReviewResult | None = None
     retry_count: int = 0
-    max_retries: int = 3
+    max_retries: int = 5
     error: str | None = None
     commit_hash: str | None = None
 
