@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -36,6 +37,19 @@ class TokenUsage:
     @property
     def total(self) -> int:
         return self.total_input + self.total_output
+
+
+# 匹配 <think>...</think> 标签（含跨行），用于过滤模型思考内容
+_THINK_RE = re.compile(r"<think>[\s\S]*?</think>", re.DOTALL)
+# 匹配未闭合的 <think>... 片段（流式场景中最后一块可能未关闭）
+_THINK_OPEN_RE = re.compile(r"<think>[\s\S]*$", re.DOTALL)
+
+
+def _strip_think_tags(text: str) -> str:
+    """移除 <think>...</think> 标签及其内容"""
+    text = _THINK_RE.sub("", text)
+    text = _THINK_OPEN_RE.sub("", text)
+    return text.strip()
 
 
 class LLMService:
@@ -103,12 +117,14 @@ class LLMService:
         # 带重试的 API 调用
         response = self._call_with_retry(label=label, **kwargs)
 
-        # 提取文本内容
+        # 提取文本内容（过滤 <think> 标签）
         text_parts: list[str] = []
         tool_calls: list[dict[str, Any]] = []
         for block in response.content:
             if block.type == "text":
-                text_parts.append(block.text)
+                cleaned = _strip_think_tags(block.text)
+                if cleaned:
+                    text_parts.append(cleaned)
             elif block.type == "tool_use":
                 tool_calls.append({
                     "id": block.id,
@@ -172,18 +188,34 @@ class LLMService:
                 sys.stdout.flush()
 
                 # 使用 streaming — 实时逐字输出 LLM 回复到控制台
+                # 过滤 <think>...</think> 标签：在 think 块内时不输出到控制台
                 with self._client.messages.stream(**kwargs) as stream:
                     streamed_text = False
+                    in_think = False  # 是否处于 <think> 块内
                     for event in stream:
                         if hasattr(event, "type"):
                             if event.type == "content_block_delta":
                                 delta = event.delta
                                 if hasattr(delta, "text") and delta.text:
+                                    chunk = delta.text
+                                    # 检测 <think> 开始/结束标签
+                                    if "<think>" in chunk:
+                                        in_think = True
+                                    if "</think>" in chunk:
+                                        in_think = False
+                                        # 取 </think> 之后的内容
+                                        after = chunk.split("</think>", 1)[1]
+                                        if after.strip():
+                                            chunk = after
+                                        else:
+                                            continue
+                                    elif in_think:
+                                        continue
                                     if not streamed_text:
                                         # 用 \r 覆盖等待提示
                                         sys.stdout.write(f"\r    {tag} ")
                                         streamed_text = True
-                                    sys.stdout.write(delta.text)
+                                    sys.stdout.write(chunk)
                                     sys.stdout.flush()
                     if streamed_text:
                         sys.stdout.write("\n")
