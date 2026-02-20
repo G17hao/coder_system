@@ -1,4 +1,9 @@
-"""子进程执行器 — 带实时输出流和心跳日志（Windows 进程树安全）"""
+"""子进程执行器 — 带实时输出流和心跳日志（Windows 进程树安全）
+
+支持两种模式:
+1. 一次性执行 (run_process): 启动 → 等完成 → 返回
+2. 交互式执行 (InteractiveProcess): 启动 → 读输出 → 写入 stdin → 继续读
+"""
 
 from __future__ import annotations
 
@@ -9,7 +14,8 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
@@ -185,3 +191,206 @@ def run_process(
         returncode=proc.returncode,
         elapsed=elapsed,
     )
+
+
+# ---------------------------------------------------------------------------
+# 交互式进程 — 保持进程存活，支持 LLM 多轮读写
+# ---------------------------------------------------------------------------
+
+@dataclass
+class InteractiveOutput:
+    """交互式进程的一次读取结果"""
+    stdout: str
+    stderr: str
+    process_id: str
+    running: bool          # 进程是否仍在运行
+    returncode: int | None  # 进程退出码（仍在运行时为 None）
+    elapsed: float
+
+
+class InteractiveProcess:
+    """管理一个可交互的子进程
+
+    启动时 stdin=PIPE，stdout/stderr 由后台线程持续读取。
+    调用方可以随时:
+    - read_output(idle_timeout): 读取当前缓冲的输出，如果进程空闲超过 idle_timeout 秒则返回
+    - send_input(text): 向进程 stdin 写入文本
+    - kill(): 终止进程
+    """
+
+    def __init__(self, proc: subprocess.Popen, process_id: str) -> None:
+        self.proc = proc
+        self.process_id = process_id
+        self._start_time = time.time()
+        self._stdout_buf: list[str] = []
+        self._stderr_buf: list[str] = []
+        self._lock = threading.Lock()
+        self._last_output_time = time.time()
+        self._finished = threading.Event()
+
+        # 后台线程持续读 stdout/stderr
+        self._t_out = threading.Thread(
+            target=self._read_stream, args=(proc.stdout, self._stdout_buf, False),
+            daemon=True,
+        )
+        self._t_err = threading.Thread(
+            target=self._read_stream, args=(proc.stderr, self._stderr_buf, True),
+            daemon=True,
+        )
+        self._t_out.start()
+        self._t_err.start()
+
+    def _read_stream(
+        self,
+        stream: object,
+        buf: list[str],
+        is_stderr: bool,
+    ) -> None:
+        """逐行读取流，追加到缓冲区"""
+        try:
+            for line in stream:  # type: ignore[union-attr]
+                with self._lock:
+                    buf.append(line)
+                    self._last_output_time = time.time()
+                tag = "[stderr] " if is_stderr else ""
+                stripped = line.rstrip()  # type: ignore[union-attr]
+                if stripped:
+                    logger.info(f"    [interactive] {tag}{stripped}")
+        except Exception:
+            pass
+        finally:
+            if not is_stderr:
+                # stdout 结束 → 进程已退出
+                self._finished.set()
+
+    def read_output(self, idle_timeout: float = 10.0) -> InteractiveOutput:
+        """读取缓冲输出，如果进程空闲超过 idle_timeout 秒则提前返回
+
+        Args:
+            idle_timeout: 无新输出的最大等待秒数
+
+        Returns:
+            InteractiveOutput 包含当前缓冲输出和进程状态
+        """
+        # 等待进程结束或空闲超时
+        while True:
+            if self._finished.wait(timeout=1.0):
+                # 进程已结束，稍等确保所有输出都读完
+                self._t_out.join(timeout=2)
+                self._t_err.join(timeout=2)
+                self.proc.wait()
+                break
+
+            with self._lock:
+                idle_secs = time.time() - self._last_output_time
+
+            if idle_secs >= idle_timeout:
+                logger.info(
+                    f"    [interactive] 进程空闲 {idle_secs:.0f}s，可能在等待输入"
+                )
+                break
+
+        # 取出缓冲区内容并清空
+        with self._lock:
+            stdout = "".join(self._stdout_buf)
+            stderr = "".join(self._stderr_buf)
+            self._stdout_buf.clear()
+            self._stderr_buf.clear()
+
+        running = self.proc.poll() is None
+        returncode = self.proc.returncode
+
+        return InteractiveOutput(
+            stdout=stdout,
+            stderr=stderr,
+            process_id=self.process_id,
+            running=running,
+            returncode=returncode,
+            elapsed=time.time() - self._start_time,
+        )
+
+    def send_input(self, text: str) -> bool:
+        """向进程 stdin 写入文本
+
+        Args:
+            text: 要写入的文本
+
+        Returns:
+            是否写入成功
+        """
+        if self.proc.poll() is not None:
+            logger.warning("    [interactive] 进程已退出，无法写入 stdin")
+            return False
+
+        try:
+            if self.proc.stdin:
+                self.proc.stdin.write(text)
+                self.proc.stdin.flush()
+                logger.info(f"    [interactive] 写入 stdin: {text.rstrip()}")
+                with self._lock:
+                    self._last_output_time = time.time()
+                return True
+        except Exception as e:
+            logger.warning(f"    [interactive] 写入 stdin 失败: {e}")
+        return False
+
+    def kill(self) -> None:
+        """终止进程"""
+        kill_process_tree(self.proc)
+        self._finished.set()
+
+    @property
+    def is_running(self) -> bool:
+        return self.proc.poll() is None
+
+
+# 全局进程注册表
+_process_registry: dict[str, InteractiveProcess] = {}
+_registry_lock = threading.Lock()
+
+
+def start_interactive_process(
+    cmd: str,
+    cwd: str | None = None,
+) -> InteractiveProcess:
+    """启动一个交互式进程并注册
+
+    Args:
+        cmd: 命令字符串
+        cwd: 工作目录
+
+    Returns:
+        InteractiveProcess 实例
+    """
+    logger.info(f"    [interactive] 启动: {cmd}")
+    proc = subprocess.Popen(
+        cmd,
+        shell=True,
+        cwd=cwd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    process_id = uuid.uuid4().hex[:8]
+    ip = InteractiveProcess(proc, process_id)
+
+    with _registry_lock:
+        _process_registry[process_id] = ip
+
+    return ip
+
+
+def get_interactive_process(process_id: str) -> InteractiveProcess | None:
+    """根据 ID 获取交互式进程"""
+    with _registry_lock:
+        return _process_registry.get(process_id)
+
+
+def remove_interactive_process(process_id: str) -> None:
+    """从注册表中移除进程"""
+    with _registry_lock:
+        ip = _process_registry.pop(process_id, None)
+    if ip and ip.is_running:
+        ip.kill()

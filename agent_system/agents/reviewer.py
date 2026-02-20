@@ -10,7 +10,12 @@ from agent_system.agents.base import BaseAgent
 from agent_system.models.context import AgentContext
 from agent_system.models.task import Task, ReviewResult
 from agent_system.agents.coder import CodeChanges
-from agent_system.tools.run_command import run_command_tool, RUN_COMMAND_TOOL_DEFINITION
+from agent_system.tools.run_command import (
+    run_command_tool,
+    send_stdin_tool,
+    RUN_COMMAND_TOOL_DEFINITION,
+    SEND_STDIN_TOOL_DEFINITION,
+)
 from agent_system.tools.read_file import READ_FILE_TOOL_DEFINITION
 from agent_system.tools.grep_content import GREP_CONTENT_TOOL_DEFINITION
 from agent_system.tools.diff_file import DIFF_FILE_TOOL_DEFINITION
@@ -134,6 +139,7 @@ class Reviewer(BaseAgent):
 
         tools = [
             RUN_COMMAND_TOOL_DEFINITION,
+            SEND_STDIN_TOOL_DEFINITION,
             READ_FILE_TOOL_DEFINITION,
             GREP_CONTENT_TOOL_DEFINITION,
             DIFF_FILE_TOOL_DEFINITION,
@@ -148,8 +154,27 @@ class Reviewer(BaseAgent):
                         cwd=tool_input.get("cwd", context.project.project_root),
                         timeout=tool_input.get("timeout", 0),
                         stdin_input=tool_input.get("stdin_input"),
+                        interactive=tool_input.get("interactive", False),
+                        idle_timeout=tool_input.get("idle_timeout", 10.0),
                     )
                     output = f"exit_code: {result.exit_code}\n"
+                    if result.process_id:
+                        output += f"process_id: {result.process_id} (进程仍在运行，等待输入。使用 send_stdin 发送输入)\n"
+                    if result.stdout:
+                        output += f"stdout:\n{result.stdout}\n"
+                    if result.stderr:
+                        output += f"stderr:\n{result.stderr}\n"
+                    return output
+
+                elif name == "send_stdin":
+                    result = send_stdin_tool(
+                        process_id=tool_input["process_id"],
+                        input_text=tool_input["input_text"],
+                        idle_timeout=tool_input.get("idle_timeout", 10.0),
+                    )
+                    output = f"exit_code: {result.exit_code}\n"
+                    if result.process_id:
+                        output += f"process_id: {result.process_id} (进程仍在运行)\n"
                     if result.stdout:
                         output += f"stdout:\n{result.stdout}\n"
                     if result.stderr:
