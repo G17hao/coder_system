@@ -223,6 +223,14 @@ class Orchestrator:
             self.run_single_task(task)
             self._save_state()
 
+            # 任务失败/阻塞后暂停，等待用户输入提示词
+            if task.status in (TaskStatus.FAILED, TaskStatus.BLOCKED):
+                should_continue = self._prompt_user_hint(task)
+                if not should_continue:
+                    logger.info("用户选择停止，退出主循环")
+                    break
+                self._save_state()
+
         # 输出最终报告
         self._print_report()
 
@@ -437,6 +445,49 @@ class Orchestrator:
         return orch
 
     # --- 内部方法 ---
+
+    def _prompt_user_hint(self, task: Task) -> bool:
+        """任务失败/阻塞后，交互式询问用户是否继续及提示词。
+
+        Returns:
+            True  — 用户输入了提示词，任务已重置为 PENDING，继续主循环
+            False — 用户直接回车（无输入），停止主循环
+        """
+        import sys
+
+        print()
+        print("=" * 60)
+        print(f"[暂停] 任务 {task.id} ({task.status.value}): {task.title}")
+        if task.error:
+            print(f"  错误: {task.error[:300]}")
+        print()
+        print("请输入修复提示词让 Coder 重新尝试，或直接回车停止运行:")
+        print("  (输入提示后按回车继续；直接回车退出)")
+        print("=" * 60)
+
+        # 非交互式环境直接停止
+        if not sys.stdin.isatty():
+            print("[非交互式环境] 自动停止")
+            return False
+
+        try:
+            hint = input("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+
+        if not hint:
+            return False
+
+        # 重置任务状态，附加用户提示词
+        task.supervisor_hint = hint
+        task.status = TaskStatus.PENDING
+        task.retry_count = 0
+        task.error = None
+        logger.info(
+            f"  [用户提示] 任务 {task.id} 重置为 PENDING，提示: {hint[:120]}"
+        )
+        return True
 
     def _sync_llm_usage(self) -> None:
         """将 LLMService 的累计 usage 同步到 AgentContext"""
