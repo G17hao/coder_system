@@ -8,6 +8,7 @@ import os
 import sys
 
 from agent_system import __version__
+from agent_system.services.logging_formatter import ExecutorColorFormatter
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -103,10 +104,15 @@ def main(argv: list[str] | None = None) -> int:
 
     # 配置日志
     log_level = logging.DEBUG if args.verbose else logging.INFO
-    logging.basicConfig(
-        level=log_level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    use_color = bool(getattr(sys.stderr, "isatty", lambda: False)())
+    handler = logging.StreamHandler()
+    handler.setFormatter(ExecutorColorFormatter(log_format, use_color=use_color))
+
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()
+    root_logger.setLevel(log_level)
+    root_logger.addHandler(handler)
 
     # 抑制第三方库的详细日志
     # httpx/httpcore 在 INFO/DEBUG 输出大量 HTTP 协议细节，anthropic 可能泄露提示词
