@@ -188,34 +188,18 @@ class LLMService:
                 sys.stdout.flush()
 
                 # 使用 streaming — 实时逐字输出 LLM 回复到控制台
-                # 过滤 <think>...</think> 标签：在 think 块内时不输出到控制台
                 with self._client.messages.stream(**kwargs) as stream:
                     streamed_text = False
-                    in_think = False  # 是否处于 <think> 块内
                     for event in stream:
                         if hasattr(event, "type"):
                             if event.type == "content_block_delta":
                                 delta = event.delta
                                 if hasattr(delta, "text") and delta.text:
-                                    chunk = delta.text
-                                    # 检测 <think> 开始/结束标签
-                                    if "<think>" in chunk:
-                                        in_think = True
-                                    if "</think>" in chunk:
-                                        in_think = False
-                                        # 取 </think> 之后的内容
-                                        after = chunk.split("</think>", 1)[1]
-                                        if after.strip():
-                                            chunk = after
-                                        else:
-                                            continue
-                                    elif in_think:
-                                        continue
                                     if not streamed_text:
                                         # 用 \r 覆盖等待提示
                                         sys.stdout.write(f"\r    {tag} ")
                                         streamed_text = True
-                                    sys.stdout.write(chunk)
+                                    sys.stdout.write(delta.text)
                                     sys.stdout.flush()
                     if streamed_text:
                         sys.stdout.write("\n")
