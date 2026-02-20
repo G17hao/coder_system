@@ -90,6 +90,8 @@ def run_process(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     except Exception as e:
         elapsed = time.time() - start_time
@@ -391,6 +393,8 @@ def start_interactive_process(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
     process_id = uuid.uuid4().hex[:8]
