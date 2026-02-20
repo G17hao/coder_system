@@ -26,6 +26,10 @@
 
 {{completedTasks}}
 
+## 子任务策略
+
+{{subtaskPolicy}}
+
 ## 分析策略
 
 1. **先全局后局部**：先用 search_file 了解目录结构，再用 read_file 读关键文件

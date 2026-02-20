@@ -194,7 +194,7 @@ class Analyst(BaseAgent):
         Returns:
             结构化分析报告（JSON 字符串）
         """
-        system_prompt = self._build_system_prompt(context)
+        system_prompt = self._build_system_prompt(context, task)
         user_message = self._build_user_message(task, context)
 
         tools = [
@@ -223,7 +223,7 @@ class Analyst(BaseAgent):
 
         return response.content
 
-    def _build_system_prompt(self, context: AgentContext) -> str:
+    def _build_system_prompt(self, context: AgentContext, task: Task | None = None) -> str:
         """构建 Analyst 系统提示词"""
         template = self._load_prompt_template("analyst.md")
 
@@ -237,11 +237,20 @@ class Analyst(BaseAgent):
 
         conventions = getattr(context.project, "coding_conventions", "")
 
+        if task and task.created_by == "planner":
+            subtask_policy = (
+                "当前任务是子任务（created_by=planner）。禁止继续创建子任务，"
+                "输出分析报告时必须设置 subtasks 为 []。"
+            )
+        else:
+            subtask_policy = "当前任务可按需拆解 subtasks；仅在确有必要时输出，避免过度拆分。"
+
         return self._render_template(template, {
             "projectDescription": context.project.project_description,
             "codingConventions": conventions or "无",
             "patternMappings": mappings_text or "无",
             "completedTasks": completed_text or "无（首个任务）",
+            "subtaskPolicy": subtask_policy,
         })
 
     @staticmethod
@@ -259,6 +268,12 @@ class Analyst(BaseAgent):
         reference_roots = "\n".join(
             f"- {r}" for r in context.project.reference_roots
         )
+        if task.created_by == "planner":
+            subtask_requirement = (
+                "- subtasks: 必须为空数组 []（当前任务已是子任务，禁止继续拆分）\n"
+            )
+        else:
+            subtask_requirement = ""
         return (
             f"## 当前任务\n\n"
             f"**ID**: {task.id}\n"
@@ -276,4 +291,5 @@ class Analyst(BaseAgent):
             f"- events: 需要处理的事件\n"
             f"- files: 需要创建/修改的文件清单\n"
             f"- gaps: 目标项目中的缺口\n"
+            f"{subtask_requirement}"
         )

@@ -146,6 +146,37 @@ class TestAnalystAgent:
         assert "/project/root" in user_content
         assert "/ref1" in user_content
 
+    def test_analyst_subtask_disables_subtasks_prompt(self) -> None:
+        """当任务是子任务(created_by=planner)时，提示词应禁止继续拆分子任务"""
+        mock_llm = MagicMock()
+        mock_llm.call_with_tools_loop.return_value = MagicMock(content="{}")
+        analyst = Analyst(llm=mock_llm)
+
+        config = ProjectConfig(
+            project_name="myproject",
+            project_description="desc",
+            project_root="/project/root",
+            reference_roots=["/ref1"],
+        )
+        ctx = AgentContext(project=config, config=AgentConfig())
+        task = Task(
+            id="TX.S1",
+            title="Subtask",
+            description="Sub task desc",
+            category="model",
+            created_by="planner",
+        )
+
+        analyst.execute(task, ctx)
+
+        call_args = mock_llm.call_with_tools_loop.call_args
+        system_prompt = call_args.kwargs.get("system_prompt") or call_args[1]["system_prompt"]
+        messages = call_args.kwargs.get("messages") or call_args[1]["messages"]
+        user_content = messages[0]["content"]
+
+        assert "禁止继续创建子任务" in system_prompt
+        assert "subtasks: 必须为空数组 []" in user_content
+
 
 class TestCoderToolExecutorTracking:
     """CoderToolExecutor 文件写入跟踪测试"""

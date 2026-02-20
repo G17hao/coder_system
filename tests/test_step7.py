@@ -178,6 +178,42 @@ class TestOrchestratorMainLoop:
         assert next_task is not None
         assert next_task.id == generated[0].id
 
+    def test_subtask_should_not_generate_nested_subtasks(self) -> None:
+        """子任务（created_by=planner）不应继续拆分新的子任务"""
+        analyst_report = (
+            '{"interfaces": [], "subtasks": ['
+            '{"title": "不应再拆分", "description": "子任务不允许继续拆子任务"}'
+            ']}'
+        )
+        planner, analyst, coder, reviewer = _make_mock_agents(analyst_report=analyst_report)
+
+        subtask = Task(
+            id="T0.S1",
+            title="Subtask",
+            description="desc",
+            created_by="planner",
+        )
+        ctx = _make_context([subtask], dry_run=False)
+
+        orch = Orchestrator(
+            config=ctx.config,
+            planner=planner,
+            analyst=analyst,
+            coder=coder,
+            reviewer=reviewer,
+            context=ctx,
+        )
+        orch._state_store = StateStore(Path(tempfile.mktemp(suffix=".json")))
+        orch._file_service = MagicMock()
+        orch._git = MagicMock()
+        orch._git.has_changes.return_value = False
+
+        orch.run_single_task(subtask)
+
+        nested = [t for t in ctx.task_queue if t.id.startswith("T0.S1.S")]
+        assert len(nested) == 0
+        assert subtask.status == TaskStatus.DONE
+
 
 class TestRetryLogic:
     """重试逻辑测试"""

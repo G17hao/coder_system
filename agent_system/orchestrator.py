@@ -541,6 +541,10 @@ class Orchestrator:
 
     def _create_subtasks_from_analysis(self, task: Task) -> int:
         """从分析报告中提取子任务并写入队列。"""
+        if task.created_by == "planner":
+            task.analysis_subtasks_generated = True
+            return 0
+
         if task.analysis_subtasks_generated:
             return 0
 
