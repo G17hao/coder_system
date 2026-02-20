@@ -60,6 +60,7 @@ class Task:
     commit_hash: str | None = None
     supervisor_hint: str | None = None
     supervisor_plan: str | None = None
+    supervisor_must_change_files: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """序列化为字典"""
@@ -94,6 +95,7 @@ class Task:
             commit_hash=data.get("commit_hash"),
             supervisor_hint=data.get("supervisor_hint"),
             supervisor_plan=data.get("supervisor_plan"),
+            supervisor_must_change_files=data.get("supervisor_must_change_files", []),
         )
 
     def to_json(self) -> str:

@@ -312,6 +312,30 @@ class Orchestrator:
                     if not self._config.dry_run:
                         self._write_changes(changes)
 
+                    # 6.1 Supervisor 必改文件对账（硬门禁，先于 Reviewer）
+                    reconcile_issues, reconcile_suggestions = self._validate_must_change_files(task, changes)
+                    if reconcile_issues:
+                        task.review_result = ReviewResult(
+                            passed=False,
+                            issues=reconcile_issues,
+                            suggestions=reconcile_suggestions,
+                        )
+                        logger.warning(
+                            f"  [对账] 必改文件未覆盖，跳过审查直接重试 ({len(reconcile_issues)} 个问题)"
+                        )
+                        task.retry_count += 1
+                        if (
+                            task.retry_count > _RETRY_FUSE_THRESHOLD
+                            and not supervised
+                            and not self._config.dry_run
+                            and self._supervisor is not None
+                        ):
+                            logger.warning(
+                                f"  [fuse] 任务 {task.id} 已重试 {task.retry_count} 次，触发 Supervisor 根因分析"
+                            )
+                            break
+                        continue
+
                     # 7. 审查阶段
                     logger.info(f"  [审查] 审查中...")
                     if not self._config.dry_run:
@@ -325,14 +349,13 @@ class Orchestrator:
                     else:
                         result = ReviewResult(passed=True)
 
-                    # 7.1 覆盖性 + 一致性校验（分析缺口/任务描述/改动文件三方对齐）
+                    # 7.1 覆盖性 + 一致性校验（降级为建议，不再直接 fail）
                     alignment_issues, alignment_suggestions = self._validate_alignment(task, changes)
                     if alignment_issues:
-                        result.passed = False
-                        result.issues.extend(alignment_issues)
+                        result.suggestions.extend(alignment_issues)
                         result.suggestions.extend(alignment_suggestions)
-                        logger.warning(
-                            f"  [审查] 一致性校验未通过 ({len(alignment_issues)} 个问题)"
+                        logger.info(
+                            f"  [审查] 对齐校验产出建议 {len(alignment_issues)} 条（不阻断通过）"
                         )
 
                     task.review_result = result
@@ -393,6 +416,11 @@ class Orchestrator:
                     task.max_retries += decision.extra_retries
                     task.supervisor_hint = decision.hint
                     task.supervisor_plan = self._build_supervisor_plan_text(decision)
+                    task.supervisor_must_change_files = [
+                        self._normalize_file_path(path)
+                        for path in decision.must_change_files
+                        if self._normalize_file_path(path)
+                    ]
                     logger.info(
                         f"  [supervisor] 追加 {decision.extra_retries} 次重试，"
                         f"修复提示: {decision.hint[:120]}"
@@ -401,6 +429,10 @@ class Orchestrator:
                         logger.info(
                             f"  [supervisor] 已生成重规划（{len(task.supervisor_plan)} 字符），"
                             f"下一轮将强制注入 Coder"
+                        )
+                    if task.supervisor_must_change_files:
+                        logger.info(
+                            f"  [supervisor] 已登记必须覆盖文件 {len(task.supervisor_must_change_files)} 个"
                         )
                     # 重新进入外层循环 → 内层 while 继续执行
 
@@ -479,6 +511,40 @@ class Orchestrator:
                 suggestions.append("请逐条对齐分析 gaps，确保相关文件已创建或在本次改动中覆盖")
 
         return (issues, suggestions)
+
+    def _validate_must_change_files(self, task: Task, changes: CodeChanges | None) -> tuple[list[str], list[str]]:
+        """对账硬门禁：Supervisor 指定的 must_change_files 必须在本轮改动中出现。"""
+        required_files = [
+            self._normalize_file_path(path)
+            for path in task.supervisor_must_change_files
+            if self._normalize_file_path(path)
+        ]
+        if not required_files:
+            return ([], [])
+
+        if changes is None:
+            return (
+                ["[对账] 缺少编码产物，无法核对 must_change_files"],
+                ["请按 Supervisor 计划优先覆盖 must_change_files"],
+            )
+
+        changed_files = {
+            self._normalize_file_path(f.path)
+            for f in changes.files
+            if getattr(f, "path", None)
+        }
+
+        missing = [path for path in required_files if path not in changed_files]
+        if not missing:
+            return ([], [])
+
+        return (
+            [
+                "[对账] 以下 must_change_files 未在本轮改动中覆盖: "
+                + ", ".join(missing[:8])
+            ],
+            ["请逐项对账 Supervisor 指定文件，并在 coder_output 标注文件与问题映射"],
+        )
 
     def _parse_analysis_json(self, analysis_text: str) -> dict[str, Any] | None:
         """从 Analyst 文本中提取 JSON 结构。"""
