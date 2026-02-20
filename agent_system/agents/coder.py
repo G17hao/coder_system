@@ -15,6 +15,7 @@ from agent_system.tools.write_file import WRITE_FILE_TOOL_DEFINITION
 from agent_system.tools.grep_content import GREP_CONTENT_TOOL_DEFINITION
 from agent_system.tools.list_directory import LIST_DIRECTORY_TOOL_DEFINITION
 from agent_system.tools.replace_in_file import REPLACE_IN_FILE_TOOL_DEFINITION
+from agent_system.tools.todo_list import TODO_LIST_TOOL_DEFINITION
 
 
 @dataclass
@@ -75,6 +76,8 @@ class CoderToolExecutor:
     def __init__(self) -> None:
         # path → {"content": str, "action": "create"|"modify"}
         self._tracked_writes: dict[str, dict[str, str]] = {}
+        # TODO 列表状态（跨工具调用持久）
+        self._todo_items: list[dict[str, Any]] = []
 
     @property
     def tracked_changes(self) -> list[dict[str, str]]:
@@ -102,14 +105,29 @@ class CoderToolExecutor:
 
         elif name == "search_file":
             from agent_system.tools.search_file import search_file_tool
-            results = search_file_tool(
-                base_dir=tool_input["base_dir"],
-                pattern=tool_input.get("pattern", "*"),
-                regex=tool_input.get("regex"),
-                max_results=tool_input.get("max_results", 200),
-                respect_gitignore=tool_input.get("respect_gitignore", True),
-            )
-            return json.dumps(results, ensure_ascii=False)
+            patterns = tool_input.get("patterns")
+            if patterns:
+                # 多模式批量搜索
+                combined: dict[str, list[str]] = {}
+                for pat in patterns:
+                    results = search_file_tool(
+                        base_dir=tool_input["base_dir"],
+                        pattern=pat,
+                        regex=tool_input.get("regex"),
+                        max_results=tool_input.get("max_results", 200),
+                        respect_gitignore=tool_input.get("respect_gitignore", True),
+                    )
+                    combined[pat] = results
+                return json.dumps(combined, ensure_ascii=False)
+            else:
+                results = search_file_tool(
+                    base_dir=tool_input["base_dir"],
+                    pattern=tool_input.get("pattern", "*"),
+                    regex=tool_input.get("regex"),
+                    max_results=tool_input.get("max_results", 200),
+                    respect_gitignore=tool_input.get("respect_gitignore", True),
+                )
+                return json.dumps(results, ensure_ascii=False)
 
         elif name == "write_file":
             from agent_system.tools.write_file import write_file_tool
@@ -164,6 +182,14 @@ class CoderToolExecutor:
             self._tracked_writes[file_path] = {"content": updated_content, "action": "modify"}
             return result
 
+        elif name == "todo_list":
+            from agent_system.tools.todo_list import todo_list_tool
+            return todo_list_tool(
+                operation=tool_input["operation"],
+                items=tool_input.get("items"),
+                _state=self._todo_items,
+            )
+
         return f"未知工具: {name}"
 
 
@@ -197,6 +223,7 @@ class Coder(BaseAgent):
         user_message = self._build_user_message(task, analysis_report, context)
 
         tools = [
+            TODO_LIST_TOOL_DEFINITION,
             READ_FILE_TOOL_DEFINITION,
             SEARCH_FILE_TOOL_DEFINITION,
             WRITE_FILE_TOOL_DEFINITION,
@@ -212,7 +239,7 @@ class Coder(BaseAgent):
             tools=tools,
             tool_executor=tool_executor,
             max_iterations=300,
-            soft_limit=40,
+            soft_limit=100,
             conversation_log=kwargs.get("conversation_log"),
             label=f"Coder/{task.id}",
         )

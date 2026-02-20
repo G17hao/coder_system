@@ -232,7 +232,8 @@ SEARCH_FILE_TOOL_DEFINITION = {
     "description": (
         "搜索指定目录下匹配 glob 模式的文件。可附加正则过滤。"
         "默认遵循 .gitignore 规则，自动跳过 node_modules/build 等被忽略的目录。"
-        "如需搜索被忽略目录中的文件，设置 respect_gitignore=false。"
+        "支持单模式（pattern）或多模式批量搜索（patterns 数组）。"
+        "当提供 patterns 数组时，返回对象 {pattern: [文件列表]} ，一次搜索多个类型的文件。"
     ),
     "input_schema": {
         "type": "object",
@@ -243,8 +244,13 @@ SEARCH_FILE_TOOL_DEFINITION = {
             },
             "pattern": {
                 "type": "string",
-                "description": "glob 模式，如 '*.lua', '*.ts'",
+                "description": "glob 模式，如 '*.lua', '*.ts'（单模式搜索时使用）",
                 "default": "*",
+            },
+            "patterns": {
+                "type": "array",
+                "description": "多模式批量搜索，例如 ['*.ts', '*.lua', '*.json']。提供此参数时忽略 pattern，返回 {pattern: [文件列表]} 的对象，影响一次搜索多种文件类型。",
+                "items": {"type": "string"},
             },
             "regex": {
                 "type": "string",
