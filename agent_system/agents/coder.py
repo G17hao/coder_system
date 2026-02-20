@@ -32,6 +32,7 @@ class FileChange:
 class CodeChanges:
     """Coder 输出的文件变更集"""
     files: list[FileChange] = field(default_factory=list)
+    review_files: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         files: list[dict[str, str]] = []
@@ -44,11 +45,19 @@ class CodeChanges:
                 item["content"] = f.content
             files.append(item)
         return {
-            "files": files
+            "files": files,
+            "review_files": list(self.review_files),
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> CodeChanges:
+        review_files_raw = data.get("review_files", [])
+        review_files: list[str] = []
+        if isinstance(review_files_raw, list):
+            for item in review_files_raw:
+                path = str(item).strip()
+                if path:
+                    review_files.append(path)
         files = [
             FileChange(
                 path=f["path"],
@@ -57,7 +66,7 @@ class CodeChanges:
             )
             for f in data.get("files", [])
         ]
-        return cls(files=files)
+        return cls(files=files, review_files=review_files)
 
     @classmethod
     def from_json(cls, json_str: str) -> CodeChanges:
@@ -308,18 +317,27 @@ class Coder(BaseAgent):
             label=f"Coder/{task.id}",
         )
 
+        parsed = CodeChanges.from_json(response.content)
+
         # 优先使用工具循环中实际写入的文件记录（可靠），
         # 而非 LLM 最终 JSON 输出（可能包含占位符）
         tracked = tool_executor.tracked_changes
         if tracked:
-            return CodeChanges.from_dict({
-                "files": [
-                    {"path": item["path"], "action": item.get("action", "create")}
+            result = CodeChanges(
+                files=[
+                    FileChange(path=item["path"], action=item.get("action", "create"))
                     for item in tracked
-                ]
-            })
-        # 回退：如果工具循环未写入任何文件，尝试解析 LLM 输出
-        return CodeChanges.from_json(response.content)
+                ],
+                review_files=list(parsed.review_files),
+            )
+        else:
+            # 回退：如果工具循环未写入任何文件，尝试解析 LLM 输出
+            result = parsed
+
+        if not result.review_files:
+            result.review_files = [f.path for f in result.files if f.path]
+
+        return result
 
     def build_system_prompt(
         self,

@@ -110,11 +110,31 @@ class Reviewer(BaseAgent):
         # 构建用于审查的代码摘要和变更文件列表
         code_summary = ""
         changed_files_list = ""
+        review_files_list = ""
         if code_changes and code_changes.files:
             file_paths = [f.path for f in code_changes.files]
-            changed_files_list = "\n".join(f"  - `{p}` ({f.action})" for p, f in zip(file_paths, code_changes.files))
-            for f in code_changes.files:
-                resolved = guard.resolve_path(f.path)
+            changed_files_list = "\n".join(
+                f"  - `{p}` ({f.action})" for p, f in zip(file_paths, code_changes.files)
+            )
+
+            review_paths: list[str] = []
+            if code_changes.review_files:
+                for p in code_changes.review_files:
+                    path = str(p).strip()
+                    if path:
+                        review_paths.append(path)
+            else:
+                review_paths = list(file_paths)
+
+            seen: set[str] = set()
+            review_paths = [p for p in review_paths if not (p in seen or seen.add(p))]
+            review_files_list = "\n".join(f"  - `{p}`" for p in review_paths)
+
+            actions_by_path = {f.path: f.action for f in code_changes.files}
+
+            for path in review_paths:
+                resolved = guard.resolve_path(path)
+                action = actions_by_path.get(path, "context")
                 content_preview = ""
                 if not guard.is_allowed(resolved):
                     content_preview = f"[路径约束] 文件路径不在允许范围: {resolved}"
@@ -124,14 +144,11 @@ class Reviewer(BaseAgent):
                         content_preview = file_content[:2000]
                     except Exception as e:
                         content_preview = f"[读取失败] {type(e).__name__}: {e}"
-                elif f.content is not None:
-                    # 兼容旧格式：当 CodeChanges 仍携带 content 时作为兜底
-                    content_preview = f.content[:2000]
                 else:
                     content_preview = "[文件不存在且无内联内容]"
 
                 code_summary += (
-                    f"\n### {f.path} ({f.action})\n"
+                    f"\n### {path} ({action})\n"
                     f"```\n{content_preview}\n```\n"
                 )
 
@@ -160,12 +177,20 @@ class Reviewer(BaseAgent):
             f"以下是本次 Coder 产出的文件（代码风格检查仅限这些文件）：\n"
             f"{changed_files_list}\n\n"
         )
+        review_files_section = ""
+        if review_files_list:
+            review_files_section = (
+                f"## 需要通读的文件清单\n\n"
+                f"以下文件需要审查其完整内容（可包含未改动文件）：\n"
+                f"{review_files_list}\n\n"
+            )
 
         user_message = (
             f"## 审查任务\n\n"
             f"**任务 ID**: {task.id}\n"
             f"**标题**: {task.title}\n\n"
             f"{changed_files_section}"
+            f"{review_files_section}"
             f"{review_cmds_text}"
             f"## 代码变更（系统已从磁盘预加载）\n{code_summary}\n\n"
             f"## 要求\n\n"

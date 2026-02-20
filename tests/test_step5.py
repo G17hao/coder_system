@@ -48,11 +48,15 @@ class TestCodeChanges:
 
     def test_from_json(self) -> None:
         """从 JSON 解析文件变更"""
-        json_str = '{"files": [{"path": "src/a.ts", "content": "const a = 1;", "action": "create"}]}'
+        json_str = (
+            '{"files": [{"path": "src/a.ts", "content": "const a = 1;", "action": "create"}], '
+            '"review_files": ["src/a.ts", "src/b.ts"]}'
+        )
         changes = CodeChanges.from_json(json_str)
         assert len(changes.files) == 1
         assert changes.files[0].path == "src/a.ts"
         assert changes.files[0].content == "const a = 1;"
+        assert changes.review_files == ["src/a.ts", "src/b.ts"]
 
     def test_from_json_without_content(self) -> None:
         """新格式：仅 path/action 也可解析"""

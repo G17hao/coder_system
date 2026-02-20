@@ -71,7 +71,8 @@
       "path": "相对路径",
       "action": "create|modify|delete"
     }
-  ]
+  ],
+  "review_files": ["需要审查完整内容的文件路径"]
 }
 ```
 
