@@ -600,11 +600,11 @@ class Orchestrator:
         return "\n".join(lines)
 
     def reset_failed_tasks(self) -> None:
-        """将所有 failed/blocked 任务重置为 pending，清除错误信息，允许重新执行"""
+        """将所有 failed/blocked/in-progress 任务重置为 pending，清除错误信息，允许重新执行"""
         assert self._context is not None
         count = 0
         for task in self._context.task_queue:
-            if task.status in (TaskStatus.FAILED, TaskStatus.BLOCKED):
+            if task.status in (TaskStatus.FAILED, TaskStatus.BLOCKED, TaskStatus.IN_PROGRESS):
                 task.status = TaskStatus.PENDING
                 task.error = None
                 task.retry_count = 0

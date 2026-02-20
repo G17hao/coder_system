@@ -531,12 +531,14 @@ class TestResetFailedTasks:
     """重置失败任务测试"""
 
     def test_reset_failed_to_pending(self) -> None:
-        """reset_failed_tasks 将 failed 任务重置为 pending"""
+        """reset_failed_tasks 将 failed/in-progress 任务重置为 pending"""
         tasks = _make_tasks()
         tasks[0].status = TaskStatus.FAILED
         tasks[0].error = "some error"
         tasks[0].retry_count = 3
-        tasks[1].status = TaskStatus.DONE
+        tasks[1].status = TaskStatus.IN_PROGRESS
+        tasks[1].error = "interrupted"
+        tasks[1].retry_count = 1
         tasks[2].status = TaskStatus.PENDING
 
         ctx = _make_context(tasks)
@@ -548,7 +550,9 @@ class TestResetFailedTasks:
         assert tasks[0].status == TaskStatus.PENDING
         assert tasks[0].error is None
         assert tasks[0].retry_count == 0
-        assert tasks[1].status == TaskStatus.DONE  # 不受影响
+        assert tasks[1].status == TaskStatus.PENDING
+        assert tasks[1].error is None
+        assert tasks[1].retry_count == 0
         assert tasks[2].status == TaskStatus.PENDING  # 不受影响
 
     def test_reset_no_failed_tasks(self) -> None:
