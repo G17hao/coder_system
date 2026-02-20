@@ -308,12 +308,11 @@ class Orchestrator:
                     self._run_reflection(task)
                     return
                 else:
-                    # 失败: 撤销文件变更 + 重试
+                    # 失败: 保留文件，让 Coder 在下次重试时修复 reviewer 指出的问题
+                    # 不再调用 _revert_changes()，避免浪费 Coder 的所有工作
                     logger.warning(
-                        f"  [fail] 审查未通过: {result.issues}"
+                        f"  [fail] 审查未通过 ({len(result.issues)} 个问题)，保留文件供下轮修复"
                     )
-                    if not self._config.dry_run:
-                        self._revert_changes()
                     task.retry_count += 1
 
             # 超过最大重试次数
