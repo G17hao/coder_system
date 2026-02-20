@@ -123,7 +123,11 @@ class TestReviewerAgent:
         ctx = AgentContext(project=config, config=AgentConfig())
         task = Task(id="T1", title="Test", description="desc")
 
-        result = reviewer.execute(task, ctx)
+        # 必须传入 code_changes，否则新逻辑会自动 PASS
+        changes = CodeChanges(files=[
+            FileChange(path="test.ts", content="const x: number = 1;", action="create")
+        ])
+        result = reviewer.execute(task, ctx, code_changes=changes)
 
         # LLM 应该收到包含 review commands 的 user_message
         call_args = mock_llm.call_with_tools_loop.call_args
@@ -141,3 +145,21 @@ class TestReviewerAgent:
         # LLM 返回失败时，结果应该是失败
         assert result.passed is False
         assert len(result.issues) > 0
+
+    def test_reviewer_auto_pass_no_changes(self) -> None:
+        """Coder 无文件产出时，reviewer 应自动 PASS（不调用 LLM）"""
+        mock_llm = MagicMock()
+        reviewer = Reviewer(llm=mock_llm)
+        config = self._make_config()
+        ctx = AgentContext(project=config, config=AgentConfig())
+        task = Task(id="T1", title="Test", description="desc")
+
+        # code_changes=None
+        result = reviewer.execute(task, ctx, code_changes=None)
+        assert result.passed is True
+        mock_llm.call_with_tools_loop.assert_not_called()
+
+        # code_changes 有空文件列表
+        empty_changes = CodeChanges(files=[])
+        result2 = reviewer.execute(task, ctx, code_changes=empty_changes)
+        assert result2.passed is True
