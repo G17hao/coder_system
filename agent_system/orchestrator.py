@@ -268,6 +268,15 @@ class Orchestrator:
                 else:
                     task.analysis_cache = '{"dry_run": true}'
 
+            # 4.1 分析阶段可拆解子任务：写入队列并优先执行
+            generated_subtasks = self._create_subtasks_from_analysis(task)
+            if generated_subtasks > 0:
+                task.status = TaskStatus.PENDING
+                logger.info(
+                    f"  [分析] 已拆解 {generated_subtasks} 个子任务，父任务回到 pending 等待子任务完成"
+                )
+                return
+
             # 5~7. 编码→审查循环（含重试 + Supervisor 介入）
             supervised = False  # Supervisor 每次任务执行中至多介入一次
             while True:
@@ -511,6 +520,92 @@ class Orchestrator:
                 suggestions.append("请逐条对齐分析 gaps，确保相关文件已创建或在本次改动中覆盖")
 
         return (issues, suggestions)
+
+    def _create_subtasks_from_analysis(self, task: Task) -> int:
+        """从分析报告中提取子任务并写入队列。"""
+        if task.analysis_subtasks_generated:
+            return 0
+
+        analysis_data = self._parse_analysis_json(task.analysis_cache or "")
+        if not analysis_data:
+            task.analysis_subtasks_generated = True
+            return 0
+
+        raw_subtasks = analysis_data.get("subtasks", [])
+        if not isinstance(raw_subtasks, list):
+            task.analysis_subtasks_generated = True
+            return 0
+
+        if not self._context:
+            task.analysis_subtasks_generated = True
+            return 0
+
+        existing_ids = {t.id for t in self._context.task_queue}
+        created: list[Task] = []
+        generated_ids: list[str] = []
+
+        for index, item in enumerate(raw_subtasks, start=1):
+            if not isinstance(item, dict):
+                continue
+
+            title = str(item.get("title", "")).strip()
+            description = str(item.get("description", "")).strip()
+            if not title or not description:
+                continue
+
+            requested_id = str(item.get("id", "")).strip()
+            base_id = requested_id or f"{task.id}.S{index}"
+            subtask_id = base_id
+            suffix = 1
+            while subtask_id in existing_ids:
+                suffix += 1
+                subtask_id = f"{base_id}_{suffix}"
+
+            item_priority_raw = item.get("priority")
+            item_priority = task.priority - 1
+            if isinstance(item_priority_raw, int):
+                item_priority = item_priority_raw
+            item_priority = max(0, item_priority)
+
+            inherited_deps = list(task.dependencies)
+            item_dependencies_raw = item.get("dependencies", [])
+            item_dependencies = [
+                str(dep).strip() for dep in item_dependencies_raw
+                if str(dep).strip()
+            ] if isinstance(item_dependencies_raw, list) else []
+            merged_dependencies = [
+                dep for dep in (inherited_deps + item_dependencies)
+                if dep and dep != subtask_id
+            ]
+            merged_dependencies = list(dict.fromkeys(merged_dependencies))
+
+            subtask = Task(
+                id=subtask_id,
+                title=title,
+                description=description,
+                dependencies=merged_dependencies,
+                priority=item_priority,
+                phase=task.phase,
+                category=str(item.get("category", "")).strip() or task.category,
+                created_by="planner",
+            )
+            created.append(subtask)
+            generated_ids.append(subtask_id)
+            existing_ids.add(subtask_id)
+
+        task.analysis_subtasks_generated = True
+        if not created:
+            return 0
+
+        self._context.task_queue.extend(created)
+
+        current_dependencies = [dep for dep in task.dependencies if dep]
+        task.dependencies = list(dict.fromkeys(current_dependencies + generated_ids))
+
+        if self._planner is not None:
+            self._planner.validate_no_cycles(self._context.task_queue)
+
+        return len(created)
 
     def _validate_must_change_files(self, task: Task, changes: CodeChanges | None) -> tuple[list[str], list[str]]:
         """对账硬门禁：Supervisor 指定的 must_change_files 必须在本轮改动中出现。"""

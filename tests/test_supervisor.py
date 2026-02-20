@@ -344,6 +344,9 @@ class TestOrchestratorSupervisorIntegration:
         )
 
         orch = self._make_orchestrator([task], [fail, ReviewResult(passed=True)], decision)
+        orch._coder.execute.return_value = CodeChanges(files=[
+            FileChange(path="core/a.ts", content="export const ok = true;", action="modify"),
+        ])
         orch._git = MagicMock()
         orch._git.has_changes.return_value = False
 
@@ -381,8 +384,8 @@ class TestOrchestratorSupervisorIntegration:
         assert orch._reviewer.execute.call_count == 4  # type: ignore[union-attr]
         assert task.status == TaskStatus.BLOCKED
 
-    def test_alignment_check_blocks_pass_when_key_files_missing(self) -> None:
-        """审查通过但未覆盖分析关键文件时，覆盖性校验应阻断通过"""
+    def test_alignment_check_only_adds_suggestion_when_key_files_missing(self) -> None:
+        """审查通过但未覆盖分析关键文件时，仅追加建议，不阻断通过"""
         task = Task(id="T0", title="Test", description="desc", max_retries=1)
         task.analysis_cache = (
             '{"files":[{"path":"core/critical.ts","action":"modify"}],'
@@ -392,14 +395,15 @@ class TestOrchestratorSupervisorIntegration:
         pass_result = ReviewResult(passed=True)
         decision = SupervisorDecision(action="halt", reason="缺口未覆盖")
         orch = self._make_orchestrator([task], [pass_result], decision)
+        orch._git.has_changes.return_value = False
 
         # Coder 只改了 dummy.ts，不包含 analysis 关键文件
         orch.run_single_task(task)
 
         assert task.review_result is not None
-        assert task.review_result.passed is False
-        assert any("覆盖性校验" in issue for issue in task.review_result.issues)
-        assert task.status == TaskStatus.BLOCKED
+        assert task.review_result.passed is True
+        assert any("覆盖性校验" in suggestion for suggestion in task.review_result.suggestions)
+        assert task.status == TaskStatus.DONE
 
     def test_alignment_check_allows_when_key_file_exists_in_workspace(self) -> None:
         """关键文件已存在于工作区时，不应因本轮未改动而阻断通过"""
@@ -457,3 +461,20 @@ class TestOrchestratorSupervisorIntegration:
             assert task.review_result is not None
             assert task.review_result.passed is True
             assert not supervisor.execute.called
+
+    def test_must_change_files_reconcile_blocks_before_reviewer(self) -> None:
+        """Supervisor 指定 must_change_files 未覆盖时，应先对账失败并跳过 Reviewer"""
+        task = Task(id="T0", title="Test", description="desc", max_retries=1)
+        task.supervisor_must_change_files = ["core/must-fix.ts"]
+
+        pass_result = ReviewResult(passed=True)
+        decision = SupervisorDecision(action="halt", reason="对账未通过")
+        orch = self._make_orchestrator([task], [pass_result], decision)
+
+        orch.run_single_task(task)
+
+        assert task.review_result is not None
+        assert task.review_result.passed is False
+        assert any("must_change_files" in issue for issue in task.review_result.issues)
+        assert orch._reviewer.execute.call_count == 0  # type: ignore[union-attr]
+        assert task.status == TaskStatus.BLOCKED

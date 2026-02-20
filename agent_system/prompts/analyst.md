@@ -61,6 +61,9 @@
   "testFiles": [
     {"path": "tests/对应路径/XxxClass.test.ts", "testsFor": "对应的源文件路径", "keyScenarios": ["要测试的关键场景"]}
   ],
+  "subtasks": [
+    {"title": "子任务标题", "description": "子任务说明", "priority": 0, "category": "可选分类", "dependencies": ["可选依赖任务ID"]}
+  ],
   "gaps": ["缺口描述1", "缺口描述2"],
   "dependencies": ["依赖的已有模块/类"]
 }

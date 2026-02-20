@@ -138,6 +138,46 @@ class TestOrchestratorMainLoop:
 
         assert execution_order == ["T0", "T1", "T2"]
 
+    def test_analysis_generates_subtasks_and_prioritizes_them(self) -> None:
+        """分析阶段可拆解子任务并注入队列，且子任务优先于父任务执行"""
+        analyst_report = (
+            '{"interfaces": [], "subtasks": ['
+            '{"title": "先补接口", "description": "先实现缺失接口以解耦后续修改"}'
+            ']}'
+        )
+        planner, analyst, coder, reviewer = _make_mock_agents(analyst_report=analyst_report)
+
+        parent = Task(id="T0", title="Parent", description="parent desc", priority=10)
+        sibling = Task(id="T1", title="Sibling", description="sibling desc", priority=20)
+        ctx = _make_context([parent, sibling], dry_run=False)
+
+        orch = Orchestrator(
+            config=ctx.config,
+            planner=planner,
+            analyst=analyst,
+            coder=coder,
+            reviewer=reviewer,
+            context=ctx,
+        )
+        orch._state_store = StateStore(Path(tempfile.mktemp(suffix=".json")))
+        orch._file_service = MagicMock()
+        orch._git = MagicMock()
+        orch._git.has_changes.return_value = False
+
+        orch.run_single_task(parent)
+
+        generated = [t for t in ctx.task_queue if t.id.startswith("T0.S")]
+        assert len(generated) == 1
+        assert parent.status == TaskStatus.PENDING
+        assert parent.analysis_subtasks_generated is True
+        assert generated[0].id in parent.dependencies
+        assert coder.execute.call_count == 0  # type: ignore[union-attr]
+        assert reviewer.execute.call_count == 0  # type: ignore[union-attr]
+
+        next_task = planner.get_next_pending(ctx)
+        assert next_task is not None
+        assert next_task.id == generated[0].id
+
 
 class TestRetryLogic:
     """重试逻辑测试"""
