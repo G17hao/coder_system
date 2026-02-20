@@ -123,8 +123,8 @@ class Reviewer(BaseAgent):
                 f"## 审查命令\n\n"
                 f"请依次使用 `run_command` 工具执行以下命令，工作目录为 `{context.project.project_root}`:\n"
                 f"{cmds_list}\n\n"
-                f"如果命令失败，请分析输出并尝试修复（如安装缺失依赖等），然后重试。\n"
-                f"如果确实无法修复，将失败信息记入 issues。\n\n"
+                f"执行完命令后，只关注变更文件列表中的文件的错误和警告。\n"
+                f"其他文件的错误请完全忽略（这些是项目预存在的问题，与本次变更无关）。\n\n"
             )
 
         # 如果 coder 没有产出任何文件，直接 PASS
@@ -146,9 +146,10 @@ class Reviewer(BaseAgent):
             f"{review_cmds_text}"
             f"## 代码变更\n{code_summary}\n\n"
             f"## 要求\n\n"
-            f"1. 先执行上述审查命令（如有），**只关注变更文件列表中的文件的错误**\n"
+            f"1. 先执行上述审查命令（如有），**只关注变更文件列表中的文件的错误**，忽略其他文件的错误\n"
             f"2. 逐项检查变更文件的代码质量\n"
-            f"3. 输出 JSON 格式审查结果:\n"
+            f"3. **不要尝试修复任何代码**，只报告发现的问题\n"
+            f"4. 尽快输出 JSON 格式审查结果（审查应在 10 轮工具调用内完成）:\n"
             f'{{"passed": true/false, "issues": [...], "suggestions": [...]}}'
         )
 
@@ -250,8 +251,8 @@ class Reviewer(BaseAgent):
             messages=[{"role": "user", "content": user_message}],
             tools=tools,
             tool_executor=ReviewToolExecutor(),
-            max_iterations=300,
-            soft_limit=30,
+            max_iterations=30,
+            soft_limit=10,
             conversation_log=self._active_conversation_log,
             label=f"Reviewer/{task.id}",
         )

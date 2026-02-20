@@ -279,7 +279,7 @@ class Orchestrator:
                     task.retry_count += 1
                     continue
 
-                # 6. 写入文件
+                # 6. 写入文件（Coder 工具循环已直接写入磁盘，这里仅做兜底）
                 if not self._config.dry_run:
                     self._write_changes(changes)
 
