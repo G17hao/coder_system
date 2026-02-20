@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from agent_system.agents.base import BaseAgent
@@ -14,6 +15,8 @@ from agent_system.tools.read_file import READ_FILE_TOOL_DEFINITION
 from agent_system.tools.grep_content import GREP_CONTENT_TOOL_DEFINITION
 from agent_system.tools.diff_file import DIFF_FILE_TOOL_DEFINITION
 from agent_system.tools.ts_check import TS_CHECK_TOOL_DEFINITION
+
+logger = logging.getLogger(__name__)
 
 
 class Reviewer(BaseAgent):
@@ -99,11 +102,17 @@ class Reviewer(BaseAgent):
         """
         issues: list[str] = []
         for cmd in context.project.review_commands:
+            logger.info(f"    [review] 执行: {cmd}")
             result = run_command_tool(
                 command=cmd,
                 cwd=context.project.project_root,
+                timeout=120,  # 审查命令最多 120 秒，防止 npx 下载等待卡住
             )
-            if not result.success:
+            if result.exit_code == -1 and "超时" in result.stderr:
+                issues.append(
+                    f"命令 `{cmd}` 超时 (120s)，可能需要先安装依赖 (npm install)"
+                )
+            elif not result.success:
                 issues.append(
                     f"命令 `{cmd}` 失败 (exit={result.exit_code}):\n{result.stderr or result.stdout}"
                 )
