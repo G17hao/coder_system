@@ -37,6 +37,8 @@ class GitService:
                 cwd=self._repo,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
             if check and result.returncode != 0:
