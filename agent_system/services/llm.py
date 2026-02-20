@@ -45,8 +45,12 @@ _THINK_RE = re.compile(r"<think>[\s\S]*?</think>", re.DOTALL)
 _THINK_OPEN_RE = re.compile(r"<think>[\s\S]*$", re.DOTALL)
 
 
-def _strip_think_tags(text: str) -> str:
+def _strip_think_tags(text: str | None) -> str:
     """移除 <think>...</think> 标签及其内容"""
+    if text is None:
+        return ""
+    if not isinstance(text, str):
+        text = str(text)
     text = _THINK_RE.sub("", text)
     text = _THINK_OPEN_RE.sub("", text)
     return text.strip()

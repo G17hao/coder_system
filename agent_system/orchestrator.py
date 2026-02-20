@@ -423,17 +423,17 @@ class Orchestrator:
         return "\n".join(lines)
 
     def reset_failed_tasks(self) -> None:
-        """将所有 failed 任务重置为 pending，清除错误信息，允许重新执行"""
+        """将所有 failed/blocked 任务重置为 pending，清除错误信息，允许重新执行"""
         assert self._context is not None
         count = 0
         for task in self._context.task_queue:
-            if task.status == TaskStatus.FAILED:
+            if task.status in (TaskStatus.FAILED, TaskStatus.BLOCKED):
                 task.status = TaskStatus.PENDING
                 task.error = None
                 task.retry_count = 0
                 count += 1
         if count:
-            logger.info(f"已重置 {count} 个失败任务为 pending")
+            logger.info(f"已重置 {count} 个失败/阻塞任务为 pending")
             self._save_state()
 
     @classmethod
@@ -601,7 +601,7 @@ class Orchestrator:
                 messages=[{"role": "user", "content": prompt}],
                 label=f"CommitMsg/{task.id}",
             )
-            msg = response.content.strip()
+            msg = (response.content or "").strip()
             # 清理可能的 markdown 包裹
             if msg.startswith("```"):
                 msg = msg.split("\n", 1)[-1]
