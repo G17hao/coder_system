@@ -617,28 +617,19 @@ class Orchestrator:
         if not required_files:
             return ([], [])
 
-        if changes is None:
-            return (
-                ["[对账] 缺少编码产物，无法核对 must_change_files"],
-                ["请按 Supervisor 计划优先覆盖 must_change_files"],
-            )
-
-        changed_files = {
-            self._normalize_file_path(f.path)
-            for f in changes.files
-            if getattr(f, "path", None)
-        }
-
-        missing = [path for path in required_files if path not in changed_files]
+        missing = [
+            path for path in required_files
+            if not self._workspace_file_exists(path)
+        ]
         if not missing:
             return ([], [])
 
         return (
             [
-                "[对账] 以下 must_change_files 未在本轮改动中覆盖: "
+                "[对账] 以下 must_change_files 在磁盘中不存在: "
                 + ", ".join(missing[:8])
             ],
-            ["请逐项对账 Supervisor 指定文件，并在 coder_output 标注文件与问题映射"],
+            ["请按 Supervisor 指定文件创建或补齐内容，并在 coder_output 标注问题映射"],
         )
 
     def _parse_analysis_json(self, analysis_text: str) -> dict[str, Any] | None:
