@@ -108,7 +108,9 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    # 抑制第三方库的详细日志（httpx 在 INFO 输出每次请求，anthropic 可能泄露提示词）
+    # 抑制第三方库的详细日志
+    # httpx/httpcore 在 INFO/DEBUG 输出大量 HTTP 协议细节，anthropic 可能泄露提示词
+    # 即使 --verbose 也不需要看这些底层网络日志
     for noisy_logger in ("httpx", "httpcore", "anthropic", "urllib3"):
         logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 

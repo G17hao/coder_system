@@ -167,6 +167,10 @@ class LLMService:
                 if attempt > 1:
                     logger.info(f"    {tag} 重试 ({attempt}/{max_attempts})...")
 
+                # 显示等待提示
+                sys.stdout.write(f"\n    {tag} ⏳ 等待响应...")
+                sys.stdout.flush()
+
                 # 使用 streaming — 实时逐字输出 LLM 回复到控制台
                 with self._client.messages.stream(**kwargs) as stream:
                     streamed_text = False
@@ -176,12 +180,17 @@ class LLMService:
                                 delta = event.delta
                                 if hasattr(delta, "text") and delta.text:
                                     if not streamed_text:
-                                        sys.stdout.write(f"\n    {tag} ")
+                                        # 用 \r 覆盖等待提示
+                                        sys.stdout.write(f"\r    {tag} ")
                                         streamed_text = True
                                     sys.stdout.write(delta.text)
                                     sys.stdout.flush()
                     if streamed_text:
                         sys.stdout.write("\n")
+                        sys.stdout.flush()
+                    elif not streamed_text:
+                        # 纯工具调用无文本输出时清除等待提示
+                        sys.stdout.write("\r" + " " * 60 + "\r")
                         sys.stdout.flush()
                     response = stream.get_final_message()
 
