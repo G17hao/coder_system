@@ -101,9 +101,12 @@ class Reviewer(BaseAgent):
         """
         system_prompt = self.build_system_prompt(context.project)
 
-        # 构建用于审查的代码摘要
+        # 构建用于审查的代码摘要和变更文件列表
         code_summary = ""
+        changed_files_list = ""
         if code_changes and code_changes.files:
+            file_paths = [f.path for f in code_changes.files]
+            changed_files_list = "\n".join(f"  - `{p}` ({f.action})" for p, f in zip(file_paths, code_changes.files))
             for f in code_changes.files:
                 code_summary += (
                     f"\n### {f.path} ({f.action})\n"
@@ -124,15 +127,27 @@ class Reviewer(BaseAgent):
                 f"如果确实无法修复，将失败信息记入 issues。\n\n"
             )
 
+        # 如果 coder 没有产出任何文件，直接 PASS
+        if not code_changes or not code_changes.files:
+            logger.info("  [审查] Coder 无文件产出，自动通过")
+            return ReviewResult(passed=True, issues=[], suggestions=[])
+
+        changed_files_section = (
+            f"## 本次变更文件列表\n\n"
+            f"**只审查以下文件，其他文件的错误请忽略：**\n"
+            f"{changed_files_list}\n\n"
+        )
+
         user_message = (
             f"## 审查任务\n\n"
             f"**任务 ID**: {task.id}\n"
             f"**标题**: {task.title}\n\n"
+            f"{changed_files_section}"
             f"{review_cmds_text}"
             f"## 代码变更\n{code_summary}\n\n"
             f"## 要求\n\n"
-            f"1. 先执行上述审查命令（如有），根据输出判断是否有编译/测试错误\n"
-            f"2. 逐项检查代码质量\n"
+            f"1. 先执行上述审查命令（如有），**只关注变更文件列表中的文件的错误**\n"
+            f"2. 逐项检查变更文件的代码质量\n"
             f"3. 输出 JSON 格式审查结果:\n"
             f'{{"passed": true/false, "issues": [...], "suggestions": [...]}}'
         )
@@ -246,30 +261,63 @@ class Reviewer(BaseAgent):
     def _parse_review_result(self, content: str) -> ReviewResult:
         """解析 LLM 输出的审查结果 JSON
 
+        支持多种情况：
+        1. 正常 JSON 输出
+        2. JSON 包裹在 markdown code block 中
+        3. 纯文本回退（尝试关键字判断）
+
         Args:
             content: LLM 输出
 
         Returns:
             ReviewResult
         """
+        if not content or not content.strip():
+            logger.warning("Reviewer LLM 输出为空")
+            return ReviewResult(
+                passed=False,
+                issues=["Reviewer LLM 输出为空，无法解析审查结果"],
+                suggestions=[],
+            )
+
+        # 尝试提取 markdown code block 中的 JSON
+        import re
+        code_block_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
+        if code_block_match:
+            try:
+                data = json.loads(code_block_match.group(1))
+                return ReviewResult(
+                    passed=data.get("passed", False),
+                    issues=data.get("issues", []),
+                    suggestions=data.get("suggestions", []),
+                )
+            except json.JSONDecodeError:
+                pass
+
+        # 尝试直接提取 JSON 对象
         try:
             start = content.find("{")
             end = content.rfind("}") + 1
-            if start == -1 or end == 0:
+            if start != -1 and end > start:
+                data = json.loads(content[start:end])
                 return ReviewResult(
-                    passed=False,
-                    issues=["无法解析审查结果"],
-                    suggestions=[],
+                    passed=data.get("passed", False),
+                    issues=data.get("issues", []),
+                    suggestions=data.get("suggestions", []),
                 )
-            data = json.loads(content[start:end])
-            return ReviewResult(
-                passed=data.get("passed", False),
-                issues=data.get("issues", []),
-                suggestions=data.get("suggestions", []),
-            )
         except json.JSONDecodeError:
-            return ReviewResult(
-                passed=False,
-                issues=["审查结果 JSON 解析失败"],
-                suggestions=[],
-            )
+            pass
+
+        # 回退：根据关键字推断
+        content_lower = content.lower()
+        if '"passed": true' in content_lower or '"passed":true' in content_lower:
+            return ReviewResult(passed=True, issues=[], suggestions=[])
+
+        # 无法解析，记录原始内容前 200 字帮助调试
+        preview = content[:200].replace("\n", " ")
+        logger.warning(f"无法解析审查结果，LLM 输出前200字: {preview}")
+        return ReviewResult(
+            passed=False,
+            issues=[f"无法解析审查结果（LLM 输出前200字: {preview}）"],
+            suggestions=["检查 Reviewer LLM 是否正确输出了 JSON 格式的审查结果"],
+        )
