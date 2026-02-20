@@ -167,23 +167,32 @@ class LLMService:
                 if attempt > 1:
                     logger.info(f"    {tag} 重试 ({attempt}/{max_attempts})...")
 
-                # 使用 streaming — 实时输出文本到控制台
+                # 使用 streaming — 实时输出进度到控制台
+                # 只显示首行摘要和字符计数，完整内容保留在 response 中
                 with self._client.messages.stream(**kwargs) as stream:
-                    streamed_text = False
+                    streamed_chars = 0
+                    first_line_buf: list[str] = []
+                    first_line_done = False
                     for event in stream:
-                        # 逐 chunk 打印文本到控制台（不换行）
                         if hasattr(event, "type"):
                             if event.type == "content_block_delta":
                                 delta = event.delta
                                 if hasattr(delta, "text") and delta.text:
-                                    if not streamed_text:
-                                        # 首个文本 chunk: 打印前缀
-                                        sys.stdout.write(f"\n    {tag} ")
-                                        streamed_text = True
-                                    sys.stdout.write(delta.text)
-                                    sys.stdout.flush()
-                    if streamed_text:
-                        sys.stdout.write("\n")
+                                    streamed_chars += len(delta.text)
+                                    if not first_line_done:
+                                        first_line_buf.append(delta.text)
+                                        joined = "".join(first_line_buf)
+                                        if "\n" in joined:
+                                            first_line = joined.split("\n", 1)[0]
+                                            # 截断首行到 120 字符
+                                            display = first_line[:120]
+                                            if len(first_line) > 120:
+                                                display += "..."
+                                            sys.stdout.write(f"\n    {tag} {display}")
+                                            sys.stdout.flush()
+                                            first_line_done = True
+                    if streamed_chars > 0:
+                        sys.stdout.write(f"  ({streamed_chars} chars)\n")
                         sys.stdout.flush()
                     response = stream.get_final_message()
 

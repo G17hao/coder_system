@@ -109,14 +109,34 @@ def run_process(
         lines: list[str],
         is_stderr: bool = False,
     ) -> None:
-        """逐行读取流并记录日志"""
+        """逐行读取流并记录日志（只显示最后若干行）"""
+        max_display_lines = 20  # 控制台最多显示最后 20 行
+        line_count = 0
+        suppressed = 0
         for line in stream:  # type: ignore[union-attr]
             lines.append(line)
+            line_count += 1
             if stream_output:
                 stripped = line.rstrip()
                 if stripped:
-                    tag = f"{log_prefix}[stderr] " if is_stderr else log_prefix
-                    logger.info(f"    {tag}{stripped}")
+                    if line_count <= 5:
+                        # 前 5 行总是显示
+                        tag = f"{log_prefix}[stderr] " if is_stderr else log_prefix
+                        logger.info(f"    {tag}{stripped}")
+                    else:
+                        suppressed += 1
+        # 流结束后，如果有被抑制的行，显示最后几行摘要
+        if stream_output and suppressed > 0:
+            tail_count = min(max_display_lines, suppressed)
+            # 从 lines 中取最后 tail_count 行（跳过前5已显示的）
+            tail_start = max(5, len(lines) - tail_count)
+            tag_prefix = f"{log_prefix}[stderr] " if is_stderr else log_prefix
+            if suppressed > tail_count:
+                logger.info(f"    {tag_prefix}... ({suppressed - tail_count} 行已省略)")
+            for tail_line in lines[tail_start:]:
+                stripped = tail_line.rstrip()
+                if stripped:
+                    logger.info(f"    {tag_prefix}{stripped}")
 
     # 如果有 stdin_input，先写入再关闭
     if stdin_input is not None and proc.stdin:
