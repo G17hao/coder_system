@@ -108,6 +108,10 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
+    # 抑制第三方库的详细日志（httpx 在 INFO 输出每次请求，anthropic 可能泄露提示词）
+    for noisy_logger in ("httpx", "httpcore", "anthropic", "urllib3"):
+        logging.getLogger(noisy_logger).setLevel(logging.WARNING)
+
     if not args.project:
         if args.status:
             print("请指定 --project 参数")
