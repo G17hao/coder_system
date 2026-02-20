@@ -106,10 +106,10 @@ class TestReviewerAgent:
         assert any("any" in issue for issue in result.issues)
 
     def test_reviewer_command_failure(self) -> None:
-        """reviewCommand 失败 → 自动标记为失败"""
+        """reviewCommand 通过 LLM 工具循环执行，验证 commands 和 run_command 工具传入"""
         mock_llm = MagicMock()
         mock_llm.call_with_tools_loop.return_value = MagicMock(
-            content='{"passed": true, "issues": [], "suggestions": []}'
+            content='{"passed": false, "issues": ["编译失败"], "suggestions": ["修复类型错误"]}'
         )
 
         reviewer = Reviewer(llm=mock_llm)
@@ -118,11 +118,26 @@ class TestReviewerAgent:
             project_description="测试",
             project_root=".",
             review_checklist=[],
-            review_commands=['python -c "import sys; sys.exit(1)"'],
+            review_commands=['npx tsc --noEmit', 'npx vitest run'],
         )
         ctx = AgentContext(project=config, config=AgentConfig())
         task = Task(id="T1", title="Test", description="desc")
 
         result = reviewer.execute(task, ctx)
+
+        # LLM 应该收到包含 review commands 的 user_message
+        call_args = mock_llm.call_with_tools_loop.call_args
+        messages = call_args.kwargs.get("messages") or call_args[1].get("messages") or call_args[0][1]
+        user_msg = messages[0]["content"]
+        assert "npx tsc --noEmit" in user_msg
+        assert "npx vitest run" in user_msg
+        assert "run_command" in user_msg
+
+        # run_command 工具应该在 tools 列表中
+        tools = call_args.kwargs.get("tools") or call_args[1].get("tools") or call_args[0][2]
+        tool_names = [t["name"] for t in tools]
+        assert "run_command" in tool_names
+
+        # LLM 返回失败时，结果应该是失败
         assert result.passed is False
         assert len(result.issues) > 0

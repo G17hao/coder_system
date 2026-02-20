@@ -50,6 +50,7 @@ def run_process(
     heartbeat_interval: int = 15,
     stream_output: bool = True,
     log_prefix: str = "[cmd] ",
+    stdin_input: str | None = None,
 ) -> ProcessResult:
     """执行子进程，带实时输出流和心跳日志
 
@@ -57,6 +58,7 @@ def run_process(
     - 每 heartbeat_interval 秒输出一次心跳（如果进程仍在运行）
     - timeout > 0 时超时自动杀掉整个进程树（Windows 安全）
     - timeout = 0 时无超时限制，进程运行到自然结束
+    - stdin_input 不为 None 时，将内容写入进程 stdin 后关闭
 
     Args:
         cmd: 命令字符串
@@ -65,6 +67,7 @@ def run_process(
         heartbeat_interval: 心跳日志间隔秒数（0 禁用）
         stream_output: 是否实时流式输出命令的 stdout/stderr
         log_prefix: 日志前缀
+        stdin_input: 要写入进程 stdin 的文本（可选）
 
     Returns:
         ProcessResult 包含 stdout/stderr/returncode/elapsed/timed_out
@@ -77,6 +80,7 @@ def run_process(
             cmd,
             shell=True,
             cwd=cwd,
+            stdin=subprocess.PIPE if stdin_input is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -107,6 +111,14 @@ def run_process(
                 if stripped:
                     tag = f"{log_prefix}[stderr] " if is_stderr else log_prefix
                     logger.info(f"    {tag}{stripped}")
+
+    # 如果有 stdin_input，先写入再关闭
+    if stdin_input is not None and proc.stdin:
+        try:
+            proc.stdin.write(stdin_input)
+            proc.stdin.close()
+        except Exception:
+            pass
 
     t_out = threading.Thread(
         target=_read_stream, args=(proc.stdout, stdout_lines, False),

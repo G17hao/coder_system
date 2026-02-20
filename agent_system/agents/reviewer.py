@@ -37,6 +37,8 @@ class Reviewer(BaseAgent):
     ) -> ReviewResult:
         """执行代码审查
 
+        LLM 会在工具循环中自主执行 reviewCommands 并检查代码质量。
+
         Args:
             task: 当前任务
             context: Agent 上下文
@@ -46,22 +48,7 @@ class Reviewer(BaseAgent):
             ReviewResult 审查结果
         """
         self._active_conversation_log = kwargs.get("conversation_log")
-
-        # 1. 执行 reviewCommands
-        command_issues = self._run_review_commands(context)
-
-        # 2. 使用 LLM 进行代码质量检查
-        llm_review = self._llm_review(task, context, code_changes)
-
-        # 3. 合并结果
-        all_issues = command_issues + llm_review.issues
-        passed = len(all_issues) == 0 and llm_review.passed
-
-        return ReviewResult(
-            passed=passed,
-            issues=all_issues,
-            suggestions=llm_review.suggestions,
-        )
+        return self._llm_review(task, context, code_changes)
 
     def build_system_prompt(self, project: Any) -> str:
         """构建 Reviewer 系统提示词（公开方法，方便测试）
@@ -91,33 +78,6 @@ class Reviewer(BaseAgent):
             "reviewCommands": commands_text or "无",
         })
 
-    def _run_review_commands(self, context: AgentContext) -> list[str]:
-        """执行审查命令，收集失败信息
-
-        Args:
-            context: Agent 上下文
-
-        Returns:
-            失败的命令输出列表
-        """
-        issues: list[str] = []
-        for cmd in context.project.review_commands:
-            logger.info(f"    [review] 执行: {cmd}")
-            result = run_command_tool(
-                command=cmd,
-                cwd=context.project.project_root,
-                timeout=120,  # 审查命令最多 120 秒，防止 npx 下载等待卡住
-            )
-            if result.exit_code == -1 and "超时" in result.stderr:
-                issues.append(
-                    f"命令 `{cmd}` 超时 (120s)，可能需要先安装依赖 (npm install)"
-                )
-            elif not result.success:
-                issues.append(
-                    f"命令 `{cmd}` 失败 (exit={result.exit_code}):\n{result.stderr or result.stdout}"
-                )
-        return issues
-
     def _llm_review(
         self,
         task: Task,
@@ -145,17 +105,35 @@ class Reviewer(BaseAgent):
                     f"```\n{f.content[:2000]}\n```\n"
                 )
 
+        # 构建 review commands 列表
+        review_cmds_text = ""
+        if context.project.review_commands:
+            cmds_list = "\n".join(
+                f"  - `{cmd}`" for cmd in context.project.review_commands
+            )
+            review_cmds_text = (
+                f"## 审查命令\n\n"
+                f"请依次使用 `run_command` 工具执行以下命令，工作目录为 `{context.project.project_root}`:\n"
+                f"{cmds_list}\n\n"
+                f"如果命令失败，请分析输出并尝试修复（如安装缺失依赖等），然后重试。\n"
+                f"如果确实无法修复，将失败信息记入 issues。\n\n"
+            )
+
         user_message = (
             f"## 审查任务\n\n"
             f"**任务 ID**: {task.id}\n"
             f"**标题**: {task.title}\n\n"
+            f"{review_cmds_text}"
             f"## 代码变更\n{code_summary}\n\n"
             f"## 要求\n\n"
-            f"请逐项检查代码质量，输出 JSON 格式审查结果:\n"
+            f"1. 先执行上述审查命令（如有），根据输出判断是否有编译/测试错误\n"
+            f"2. 逐项检查代码质量\n"
+            f"3. 输出 JSON 格式审查结果:\n"
             f'{{"passed": true/false, "issues": [...], "suggestions": [...]}}'
         )
 
         tools = [
+            RUN_COMMAND_TOOL_DEFINITION,
             READ_FILE_TOOL_DEFINITION,
             GREP_CONTENT_TOOL_DEFINITION,
             DIFF_FILE_TOOL_DEFINITION,
@@ -164,7 +142,21 @@ class Reviewer(BaseAgent):
 
         class ReviewToolExecutor:
             def execute(self, name: str, tool_input: dict[str, Any]) -> str:
-                if name == "read_file":
+                if name == "run_command":
+                    result = run_command_tool(
+                        command=tool_input["command"],
+                        cwd=tool_input.get("cwd", context.project.project_root),
+                        timeout=tool_input.get("timeout", 0),
+                        stdin_input=tool_input.get("stdin_input"),
+                    )
+                    output = f"exit_code: {result.exit_code}\n"
+                    if result.stdout:
+                        output += f"stdout:\n{result.stdout}\n"
+                    if result.stderr:
+                        output += f"stderr:\n{result.stderr}\n"
+                    return output
+
+                elif name == "read_file":
                     from agent_system.tools.read_file import read_file_tool
                     try:
                         return read_file_tool(

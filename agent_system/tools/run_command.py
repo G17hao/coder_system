@@ -26,6 +26,7 @@ def run_command_tool(
     command: str,
     cwd: str | None = None,
     timeout: int = 0,
+    stdin_input: str | None = None,
 ) -> CommandResult:
     """执行 shell 命令，带实时输出流和心跳日志
 
@@ -33,6 +34,7 @@ def run_command_tool(
         command: 要执行的命令字符串
         cwd: 工作目录（可选）
         timeout: 超时秒数（0 = 无限制）
+        stdin_input: 要写入进程 stdin 的文本（可选）
 
     Returns:
         CommandResult 包含 stdout/stderr/exit_code
@@ -44,6 +46,7 @@ def run_command_tool(
         heartbeat_interval=15,
         stream_output=True,
         log_prefix="[cmd] ",
+        stdin_input=stdin_input,
     )
     return CommandResult(
         stdout=result.stdout,
@@ -55,7 +58,7 @@ def run_command_tool(
 # LLM tool_use 工具定义
 RUN_COMMAND_TOOL_DEFINITION = {
     "name": "run_command",
-    "description": "执行 shell 命令。返回 stdout、stderr 和 exit_code。",
+    "description": "执行 shell 命令。返回 stdout、stderr 和 exit_code。可通过 stdin_input 向进程提供输入（如确认 Y/N）。",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -71,6 +74,10 @@ RUN_COMMAND_TOOL_DEFINITION = {
                 "type": "integer",
                 "description": "超时秒数，0 = 无限制（默认）",
                 "default": 0,
+            },
+            "stdin_input": {
+                "type": "string",
+                "description": "要写入进程标准输入的文本，用于回答交互式提示（如 Y/N 确认）",
             },
         },
         "required": ["command"],
