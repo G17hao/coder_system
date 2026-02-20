@@ -400,3 +400,60 @@ class TestOrchestratorSupervisorIntegration:
         assert task.review_result.passed is False
         assert any("覆盖性校验" in issue for issue in task.review_result.issues)
         assert task.status == TaskStatus.BLOCKED
+
+    def test_alignment_check_allows_when_key_file_exists_in_workspace(self) -> None:
+        """关键文件已存在于工作区时，不应因本轮未改动而阻断通过"""
+        task = Task(id="T0", title="Test", description="desc", max_retries=1)
+        task.analysis_cache = (
+            '{"files":[{"path":"core/critical.ts","action":"modify"}],'
+            '"gaps":["缺少 core/critical.ts 中关键逻辑"]}'
+        )
+
+        pass_result = ReviewResult(passed=True)
+        decision = SupervisorDecision(action="halt", reason="不应触发")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            critical = Path(tmp) / "core" / "critical.ts"
+            critical.parent.mkdir(parents=True, exist_ok=True)
+            critical.write_text("export const ok = true;", encoding="utf-8")
+
+            mock_llm = MagicMock()
+            planner = Planner(llm=mock_llm)
+            analyst = MagicMock(spec=Analyst)
+            analyst.execute.return_value = '{"interfaces": []}'
+            coder = MagicMock(spec=Coder)
+            coder.execute.return_value = _make_dummy_changes()
+            reviewer = MagicMock(spec=Reviewer)
+            reviewer.execute.return_value = pass_result
+            supervisor = MagicMock(spec=Supervisor)
+            supervisor.execute.return_value = decision
+
+            config = ProjectConfig(
+                project_name="test",
+                project_description="测试",
+                project_root=tmp,
+            )
+            agent_config = AgentConfig(dry_run=False)
+            ctx = AgentContext(project=config, config=agent_config)
+            ctx.task_queue = [task]
+
+            orch = Orchestrator(
+                config=ctx.config,
+                planner=planner,
+                analyst=analyst,
+                coder=coder,
+                reviewer=reviewer,
+                supervisor=supervisor,
+                context=ctx,
+            )
+            orch._state_store = StateStore(Path(tempfile.mktemp(suffix=".json")))
+            orch._file_service = MagicMock()
+            orch._git = MagicMock()
+            orch._git.has_changes.return_value = False
+
+            orch.run_single_task(task)
+
+            assert task.status == TaskStatus.DONE
+            assert task.review_result is not None
+            assert task.review_result.passed is True
+            assert not supervisor.execute.called

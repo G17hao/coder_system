@@ -452,25 +452,31 @@ class Orchestrator:
         # 覆盖性校验：分析阶段识别的关键文件是否被覆盖
         key_files = self._extract_key_files(analysis_data)
         if key_files:
-            missing = [f for f in key_files if f not in changed_files]
+            missing = [
+                f for f in key_files
+                if f not in changed_files and not self._workspace_file_exists(f)
+            ]
             if missing:
                 issues.append(
-                    "[覆盖性校验] 分析识别的关键文件未被覆盖: "
+                    "[覆盖性校验] 分析识别的关键文件未被覆盖且工作区不存在: "
                     + ", ".join(missing[:8])
                 )
-                suggestions.append("请优先修改分析阶段标记的关键文件，并在输出中说明修复对应关系")
+                suggestions.append("请优先修改或创建分析阶段标记的关键文件，并在输出中说明修复对应关系")
 
         # 一致性校验：任务描述 / 分析缺口 / 改动文件三方对齐
         # 规则：若分析缺口中出现明确文件路径，这些路径应在改动列表中出现
         gap_files = self._extract_gap_file_refs(analysis_data)
         if gap_files:
-            unresolved_gap_files = [f for f in gap_files if f not in changed_files]
+            unresolved_gap_files = [
+                f for f in gap_files
+                if f not in changed_files and not self._workspace_file_exists(f)
+            ]
             if unresolved_gap_files:
                 issues.append(
-                    "[一致性校验] 分析缺口指向的文件未被修改: "
+                    "[一致性校验] 分析缺口指向的文件未被修改且工作区不存在: "
                     + ", ".join(unresolved_gap_files[:8])
                 )
-                suggestions.append("请逐条对齐分析 gaps，与本次改动文件建立一一对应关系")
+                suggestions.append("请逐条对齐分析 gaps，确保相关文件已创建或在本次改动中覆盖")
 
         return (issues, suggestions)
 
@@ -546,6 +552,14 @@ class Orchestrator:
         cleaned = cleaned.lstrip("/")
 
         return cleaned
+
+    def _workspace_file_exists(self, normalized_rel_path: str) -> bool:
+        """检查工作区内相对路径文件是否存在。"""
+        if not self._context or not normalized_rel_path:
+            return False
+        base = Path(self._context.project.project_root)
+        target = (base / normalized_rel_path).resolve()
+        return target.exists() and target.is_file()
 
     def run_until(self, task_count: int) -> None:
         """执行指定数量的任务后停止（用于测试）
