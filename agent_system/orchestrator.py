@@ -443,20 +443,28 @@ class Orchestrator:
         Returns:
             commit hash 或 None
         """
-        if not self._git or not self._config.git_auto_commit or self._config.dry_run:
+        if not self._git:
+            logger.warning("  [git] 跳过提交: GitService 未初始化")
+            return None
+        if not self._config.git_auto_commit:
+            logger.info("  [git] 跳过提交: git_auto_commit=False")
+            return None
+        if self._config.dry_run:
+            logger.info("  [git] 跳过提交: dry_run 模式")
             return None
         try:
             if not self._git.has_changes():
+                logger.info("  [git] 跳过提交: 无文件变更")
                 return None
 
             # 让 LLM 生成 commit message
             commit_msg = self._generate_commit_message(task, changes)
             self._git.add_all()
             commit_hash = self._git.commit(commit_msg)
-            logger.info(f"  [git] 提交: {commit_msg.splitlines()[0]}")
+            logger.info(f"  [git] 提交成功: {commit_hash[:8]} {commit_msg.splitlines()[0]}")
             return commit_hash
         except GitError as e:
-            logger.warning(f"Git commit 失败: {e}")
+            logger.warning(f"  [git] 提交失败: {e}")
         return None
 
     def _generate_commit_message(self, task: Task, changes: CodeChanges | None) -> str:
