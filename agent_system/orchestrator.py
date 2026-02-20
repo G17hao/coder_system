@@ -321,29 +321,8 @@ class Orchestrator:
                     if not self._config.dry_run:
                         self._write_changes(changes)
 
-                    # 6.1 Supervisor 必改文件对账（硬门禁，先于 Reviewer）
+                    # 6.1 Supervisor 必改文件对账（仅做提示，交由 Reviewer/LLM 判断）
                     reconcile_issues, reconcile_suggestions = self._validate_must_change_files(task, changes)
-                    if reconcile_issues:
-                        task.review_result = ReviewResult(
-                            passed=False,
-                            issues=reconcile_issues,
-                            suggestions=reconcile_suggestions,
-                        )
-                        logger.warning(
-                            f"  [对账] 必改文件未覆盖，跳过审查直接重试 ({len(reconcile_issues)} 个问题)"
-                        )
-                        task.retry_count += 1
-                        if (
-                            task.retry_count > _RETRY_FUSE_THRESHOLD
-                            and not supervised
-                            and not self._config.dry_run
-                            and self._supervisor is not None
-                        ):
-                            logger.warning(
-                                f"  [fuse] 任务 {task.id} 已重试 {task.retry_count} 次，触发 Supervisor 根因分析"
-                            )
-                            break
-                        continue
 
                     # 7. 审查阶段
                     logger.info(f"  [审查] 审查中...")
@@ -365,6 +344,13 @@ class Orchestrator:
                         result.suggestions.extend(alignment_suggestions)
                         logger.info(
                             f"  [审查] 对齐校验产出建议 {len(alignment_issues)} 条（不阻断通过）"
+                        )
+
+                    if reconcile_issues:
+                        result.suggestions.extend(reconcile_issues)
+                        result.suggestions.extend(reconcile_suggestions)
+                        logger.info(
+                            f"  [审查] 必改文件对账产出建议 {len(reconcile_issues)} 条（交由 LLM 决策）"
                         )
 
                     task.review_result = result

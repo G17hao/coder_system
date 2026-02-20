@@ -462,19 +462,20 @@ class TestOrchestratorSupervisorIntegration:
             assert task.review_result.passed is True
             assert not supervisor.execute.called
 
-    def test_must_change_files_reconcile_blocks_before_reviewer(self) -> None:
-        """Supervisor 指定 must_change_files 未覆盖时，应先对账失败并跳过 Reviewer"""
+    def test_must_change_files_reconcile_adds_suggestion_only(self) -> None:
+        """Supervisor 指定 must_change_files 未覆盖时，仅追加建议，不阻断 Reviewer"""
         task = Task(id="T0", title="Test", description="desc", max_retries=1)
         task.supervisor_must_change_files = ["core/must-fix.ts"]
 
         pass_result = ReviewResult(passed=True)
         decision = SupervisorDecision(action="halt", reason="对账未通过")
         orch = self._make_orchestrator([task], [pass_result], decision)
+        orch._git.has_changes.return_value = False
 
         orch.run_single_task(task)
 
         assert task.review_result is not None
-        assert task.review_result.passed is False
-        assert any("must_change_files" in issue for issue in task.review_result.issues)
-        assert orch._reviewer.execute.call_count == 0  # type: ignore[union-attr]
-        assert task.status == TaskStatus.BLOCKED
+        assert task.review_result.passed is True
+        assert any("must_change_files" in suggestion for suggestion in task.review_result.suggestions)
+        assert orch._reviewer.execute.call_count == 1  # type: ignore[union-attr]
+        assert task.status == TaskStatus.DONE
