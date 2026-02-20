@@ -65,7 +65,12 @@ class TestSupervisorAgent:
 
     def test_parse_halt_decision(self) -> None:
         """LLM 返回 halt → 正确解析"""
-        content = '{"action": "halt", "reason": "同样错误反复出现", "hint": "", "extra_retries": 0}'
+        content = (
+            '{"action": "halt", "reason": "【证据】同样错误在多轮重试中重复出现。'
+            '【阻塞】缺少关键接口定义导致无法继续收敛。'
+            '【人工输入】请确认接口契约后再继续。", '
+            '"hint": "", "extra_retries": 0}'
+        )
         supervisor = self._make_supervisor(content)
         task = Task(id="T1", title="test", description="desc", retry_count=5, max_retries=5)
         ctx = _make_context()
@@ -73,7 +78,7 @@ class TestSupervisorAgent:
         decision = supervisor.execute(task, ctx)
 
         assert decision.action == "halt"
-        assert "反复" in decision.reason
+        assert ("重复" in decision.reason) or ("反复" in decision.reason)
 
     def test_parse_fallback_on_invalid_json(self) -> None:
         """LLM 返回无法解析的内容 → 默认 halt"""
@@ -293,3 +298,36 @@ class TestOrchestratorSupervisorIntegration:
         orch.run_single_task(task)
 
         assert orch._supervisor.execute.call_count == 1  # type: ignore[union-attr]
+
+    def test_retry_fuse_triggers_supervisor_before_max_retries(self) -> None:
+        """重试超过 3 次时触发熔断，不继续硬重试到 max_retries"""
+        task = Task(id="T0", title="Test", description="desc", max_retries=10)
+        fail = ReviewResult(passed=False, issues=["error"])
+        decision = SupervisorDecision(action="halt", reason="进入根因分析")
+
+        orch = self._make_orchestrator([task], [fail] * 10, decision)
+        orch.run_single_task(task)
+
+        assert orch._supervisor.execute.call_count == 1  # type: ignore[union-attr]
+        assert orch._reviewer.execute.call_count == 4  # type: ignore[union-attr]
+        assert task.status == TaskStatus.BLOCKED
+
+    def test_alignment_check_blocks_pass_when_key_files_missing(self) -> None:
+        """审查通过但未覆盖分析关键文件时，覆盖性校验应阻断通过"""
+        task = Task(id="T0", title="Test", description="desc", max_retries=1)
+        task.analysis_cache = (
+            '{"files":[{"path":"core/critical.ts","action":"modify"}],'
+            '"gaps":["缺少 core/critical.ts 中关键逻辑"]}'
+        )
+
+        pass_result = ReviewResult(passed=True)
+        decision = SupervisorDecision(action="halt", reason="缺口未覆盖")
+        orch = self._make_orchestrator([task], [pass_result], decision)
+
+        # Coder 只改了 dummy.ts，不包含 analysis 关键文件
+        orch.run_single_task(task)
+
+        assert task.review_result is not None
+        assert task.review_result.passed is False
+        assert any("覆盖性校验" in issue for issue in task.review_result.issues)
+        assert task.status == TaskStatus.BLOCKED

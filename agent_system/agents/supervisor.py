@@ -105,16 +105,39 @@ class Supervisor(BaseAgent):
             m = re.search(r"\{[\s\S]*\}", content)
             if m:
                 data = json.loads(m.group())
+                action = str(data.get("action", "halt")).strip().lower()
+                reason = str(data.get("reason", "") or "").strip()
+                hint = str(data.get("hint", "") or "").strip()
+                extra_retries = max(1, int(data.get("extra_retries", 3)))
+
+                if action not in ("continue", "halt"):
+                    action = "halt"
+
+                # 审慎暂停：halt 必须给出充分理由；否则退回 continue，避免过早阻塞
+                if action == "halt" and len(reason) < 30:
+                    action = "continue"
+                    reason = (
+                        "Supervisor 提供的暂停理由不足（过短且不可核验），"
+                        "按默认策略继续重试，并要求补充证据化的阻塞说明。"
+                    )
+                    if not hint:
+                        hint = "请针对最近一次 review issues，逐条修改关键文件并在输出中标注“问题->文件->改动”映射"
+                    extra_retries = max(extra_retries, 2)
+
                 return SupervisorDecision(
-                    action=data.get("action", "halt"),
-                    reason=data.get("reason", ""),
-                    hint=data.get("hint", ""),
-                    extra_retries=max(1, int(data.get("extra_retries", 3))),
+                    action=action,
+                    reason=reason,
+                    hint=hint,
+                    extra_retries=extra_retries,
                 )
         except Exception as e:
             logger.warning(f"Supervisor 决策解析失败: {e}，默认暂停")
 
         return SupervisorDecision(
             action="halt",
-            reason="无法解析 Supervisor 输出，默认暂停等待人工介入",
+            reason=(
+                "无法解析 Supervisor 输出，且无法确认继续修复路径。"
+                "请人工检查 Supervisor 的 JSON 输出格式与阻塞证据，"
+                "确认后再恢复任务。"
+            ),
         )
