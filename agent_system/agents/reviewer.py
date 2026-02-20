@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from agent_system.agents.base import BaseAgent
@@ -108,9 +109,25 @@ class Reviewer(BaseAgent):
             file_paths = [f.path for f in code_changes.files]
             changed_files_list = "\n".join(f"  - `{p}` ({f.action})" for p, f in zip(file_paths, code_changes.files))
             for f in code_changes.files:
+                resolved = Path(f.path)
+                if not resolved.is_absolute():
+                    resolved = Path(context.project.project_root) / f.path
+                content_preview = ""
+                if resolved.exists():
+                    try:
+                        file_content = resolved.read_text(encoding="utf-8", errors="replace")
+                        content_preview = file_content[:2000]
+                    except Exception as e:
+                        content_preview = f"[读取失败] {type(e).__name__}: {e}"
+                elif f.content is not None:
+                    # 兼容旧格式：当 CodeChanges 仍携带 content 时作为兜底
+                    content_preview = f.content[:2000]
+                else:
+                    content_preview = "[文件不存在且无内联内容]"
+
                 code_summary += (
                     f"\n### {f.path} ({f.action})\n"
-                    f"```\n{f.content[:2000]}\n```\n"
+                    f"```\n{content_preview}\n```\n"
                 )
 
         # 构建 review commands 列表
@@ -145,12 +162,12 @@ class Reviewer(BaseAgent):
             f"**标题**: {task.title}\n\n"
             f"{changed_files_section}"
             f"{review_cmds_text}"
-            f"## 代码变更\n{code_summary}\n\n"
+            f"## 代码变更（系统已从磁盘预加载）\n{code_summary}\n\n"
             f"## 要求\n\n"
             f"1. 先执行上述审查命令（如有）：\n"
             f"   - 编译错误和测试失败：**全项目范围**，有报错即为 issue（Coder 可能破坏了调用方）\n"
             f"   - 代码风格问题：**只检查变更文件列表中的文件**，其他文件的风格问题忽略\n"
-            f"2. 逐项检查变更文件的代码质量\n"
+            f"2. 优先基于上面的预加载代码内容进行审查；若信息不足再使用 read_file 补充读取\n"
             f"3. **不要尝试修复任何代码**，只报告发现的问题\n"
             f"4. 尽快输出 JSON 格式审查结果（审查应在 10 轮工具调用内完成）:\n"
             f'{{"passed": true/false, "issues": [...], "suggestions": [...]}}'

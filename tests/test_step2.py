@@ -11,6 +11,7 @@ from agent_system.models.project_config import ProjectConfig
 from agent_system.models.context import AgentConfig, AgentContext
 from agent_system.services.state_store import StateStore
 from agent_system.services.git_service import GitService
+from agent_system.services.file_service import FileService
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -143,6 +144,25 @@ class TestGitService:
         branch = git.current_branch()
         assert len(branch) > 0
         assert isinstance(branch, str)
+
+
+class TestFileService:
+    """FileService 文件操作测试"""
+
+    def test_delete_file(self) -> None:
+        """删除存在文件返回 True，重复删除返回 False"""
+        with tempfile.TemporaryDirectory() as tmp:
+            svc = FileService(tmp)
+            rel = "a/test.txt"
+            svc.write(rel, "hello")
+            assert svc.exists(rel) is True
+
+            deleted = svc.delete(rel)
+            assert deleted is True
+            assert svc.exists(rel) is False
+
+            deleted_again = svc.delete(rel)
+            assert deleted_again is False
 
 
 class TestAgentContext:

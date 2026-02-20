@@ -54,6 +54,14 @@ class TestCodeChanges:
         assert changes.files[0].path == "src/a.ts"
         assert changes.files[0].content == "const a = 1;"
 
+    def test_from_json_without_content(self) -> None:
+        """新格式：仅 path/action 也可解析"""
+        json_str = '{"files": [{"path": "src/a.ts", "action": "modify"}]}'
+        changes = CodeChanges.from_json(json_str)
+        assert len(changes.files) == 1
+        assert changes.files[0].path == "src/a.ts"
+        assert changes.files[0].content is None
+
     def test_from_json_with_surrounding_text(self) -> None:
         """从包含额外文本的 LLM 输出中提取 JSON"""
         llm_output = (
@@ -118,5 +126,5 @@ class TestCoderAgent:
 
         changes = coder.execute(task, ctx, analysis_report='{"interfaces": []}')
         assert len(changes.files) > 0
-        assert all(f.path and f.content for f in changes.files)
-        assert "PlayerModel" in changes.files[0].content
+        assert all(f.path for f in changes.files)
+        assert all(f.action in ("create", "modify", "delete") for f in changes.files)

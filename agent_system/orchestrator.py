@@ -509,7 +509,7 @@ class Orchestrator:
                 continue
             path = item.get("path")
             action = str(item.get("action", "")).lower()
-            if isinstance(path, str) and path.strip() and action in ("create", "modify", "update"):
+            if isinstance(path, str) and path.strip() and action in ("create", "modify", "update", "delete"):
                 normalized = self._normalize_file_path(path)
                 if normalized:
                     result.append(normalized)
@@ -710,6 +710,16 @@ class Orchestrator:
         if not self._file_service:
             return
         for f in changes.files:
+            if f.action == "delete":
+                deleted = self._file_service.delete(f.path)
+                if deleted:
+                    logger.info(f"    [write] 删除: {f.path}")
+                else:
+                    logger.info(f"    [write] 删除跳过: {f.path}（文件不存在）")
+                continue
+            if f.content is None:
+                logger.info(f"    [write] 跳过: {f.path}（无内联内容，默认已由工具写入）")
+                continue
             self._file_service.write(f.path, f.content)
             logger.info(f"    [write] 写入: {f.path}")
 
@@ -763,7 +773,7 @@ class Orchestrator:
         # 构建变更摘要
         file_summary = []
         for f in changes.files:
-            lines = f.content.count('\n') + 1
+            lines = (f.content.count('\n') + 1) if f.content is not None else 0
             file_summary.append(f"  - {f.path} ({f.action}, {lines} lines)")
         files_text = "\n".join(file_summary)
 

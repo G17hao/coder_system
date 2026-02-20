@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sys
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -163,3 +165,36 @@ class TestReviewerAgent:
         empty_changes = CodeChanges(files=[])
         result2 = reviewer.execute(task, ctx, code_changes=empty_changes)
         assert result2.passed is True
+
+    def test_reviewer_preloads_disk_content_without_inline_content(self) -> None:
+        """CodeChanges 无 content 时，Reviewer 仍应从磁盘预加载代码注入 user_message"""
+        mock_llm = MagicMock()
+        mock_llm.call_with_tools_loop.return_value = MagicMock(
+            content='{"passed": true, "issues": [], "suggestions": []}'
+        )
+
+        reviewer = Reviewer(llm=mock_llm)
+        with tempfile.TemporaryDirectory() as tmp:
+            file_path = Path(tmp) / "test.ts"
+            file_path.write_text("const preloaded = 123;", encoding="utf-8")
+
+            config = ProjectConfig(
+                project_name="test",
+                project_description="测试",
+                project_root=tmp,
+                review_checklist=[],
+                review_commands=[],
+            )
+            ctx = AgentContext(project=config, config=AgentConfig())
+            task = Task(id="T1", title="Test", description="desc")
+            changes = CodeChanges(files=[
+                FileChange(path="test.ts", action="modify")
+            ])
+
+            reviewer.execute(task, ctx, code_changes=changes)
+
+            call_args = mock_llm.call_with_tools_loop.call_args
+            messages = call_args.kwargs.get("messages") or call_args[1].get("messages") or call_args[0][1]
+            user_msg = messages[0]["content"]
+            assert "系统已从磁盘预加载" in user_msg
+            assert "const preloaded = 123;" in user_msg

@@ -66,6 +66,21 @@ class FileService:
         full_path.write_text(content, encoding="utf-8")
         return full_path
 
+    def delete(self, rel_path: str | Path) -> bool:
+        """删除文件。
+
+        Args:
+            rel_path: 相对于 base_dir 的路径
+
+        Returns:
+            True 表示文件存在且已删除；False 表示文件原本不存在
+        """
+        full_path = self._resolve(rel_path)
+        if not full_path.exists():
+            return False
+        full_path.unlink()
+        return True
+
     def exists(self, rel_path: str | Path) -> bool:
         """文件是否存在"""
         return self._resolve(rel_path).exists()

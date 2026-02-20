@@ -22,8 +22,8 @@ from agent_system.tools.todo_list import TODO_LIST_TOOL_DEFINITION
 class FileChange:
     """单个文件变更"""
     path: str
-    content: str
-    action: str = "create"  # "create" | "modify"
+    content: str | None = None
+    action: str = "create"  # "create" | "modify" | "delete"
 
 
 @dataclass
@@ -32,11 +32,17 @@ class CodeChanges:
     files: list[FileChange] = field(default_factory=list)
 
     def to_dict(self) -> dict:
+        files: list[dict[str, str]] = []
+        for f in self.files:
+            item: dict[str, str] = {
+                "path": f.path,
+                "action": f.action,
+            }
+            if f.content is not None:
+                item["content"] = f.content
+            files.append(item)
         return {
-            "files": [
-                {"path": f.path, "content": f.content, "action": f.action}
-                for f in self.files
-            ]
+            "files": files
         }
 
     @classmethod
@@ -44,7 +50,7 @@ class CodeChanges:
         files = [
             FileChange(
                 path=f["path"],
-                content=f["content"],
+                content=f.get("content"),
                 action=f.get("action", "create"),
             )
             for f in data.get("files", [])
@@ -255,7 +261,12 @@ class Coder(BaseAgent):
         # 而非 LLM 最终 JSON 输出（可能包含占位符）
         tracked = tool_executor.tracked_changes
         if tracked:
-            return CodeChanges.from_dict({"files": tracked})
+            return CodeChanges.from_dict({
+                "files": [
+                    {"path": item["path"], "action": item.get("action", "create")}
+                    for item in tracked
+                ]
+            })
         # 回退：如果工具循环未写入任何文件，尝试解析 LLM 输出
         return CodeChanges.from_json(response.content)
 
@@ -352,5 +363,5 @@ class Coder(BaseAgent):
             f"{retry_info}\n"
             f"## 要求\n\n"
             f"请根据分析报告生成代码文件。输出 JSON 格式的文件变更列表:\n"
-            f'{{"files": [{{"path": "相对路径", "action": "create|modify", "content": "完整内容"}}]}}\n'
+            f'{{"files": [{{"path": "相对路径", "action": "create|modify|delete"}}]}}\n'
         )
