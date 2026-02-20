@@ -66,7 +66,23 @@ class CodeChanges:
 
 
 class CoderToolExecutor:
-    """Coder 可用的工具执行器"""
+    """Coder 可用的工具执行器
+
+    自动跟踪 write_file / replace_in_file 实际写入的文件内容，
+    用于生成可靠的 CodeChanges，不依赖 LLM 最终 JSON 输出。
+    """
+
+    def __init__(self) -> None:
+        # path → {"content": str, "action": "create"|"modify"}
+        self._tracked_writes: dict[str, dict[str, str]] = {}
+
+    @property
+    def tracked_changes(self) -> list[dict[str, str]]:
+        """返回工具循环中实际写入的文件列表"""
+        return [
+            {"path": path, "content": info["content"], "action": info["action"]}
+            for path, info in self._tracked_writes.items()
+        ]
 
     def execute(self, name: str, tool_input: dict[str, Any]) -> str:
         try:
@@ -97,10 +113,13 @@ class CoderToolExecutor:
 
         elif name == "write_file":
             from agent_system.tools.write_file import write_file_tool
-            return write_file_tool(
-                path=tool_input["path"],
-                content=tool_input["content"],
-            )
+            file_path = tool_input["path"]
+            content = tool_input["content"]
+            result = write_file_tool(path=file_path, content=content)
+            # 跟踪写入：如果路径已有记录视为 modify，否则判断文件是否预先存在
+            action = "modify" if file_path in self._tracked_writes else "create"
+            self._tracked_writes[file_path] = {"content": content, "action": action}
+            return result
 
         elif name == "grep_content":
             from agent_system.tools.grep_content import grep_content_tool, grep_dir_tool
@@ -133,11 +152,17 @@ class CoderToolExecutor:
 
         elif name == "replace_in_file":
             from agent_system.tools.replace_in_file import replace_in_file_tool
-            return replace_in_file_tool(
-                path=tool_input["path"],
+            file_path = tool_input["path"]
+            result = replace_in_file_tool(
+                path=file_path,
                 old_text=tool_input["old_text"],
                 new_text=tool_input["new_text"],
             )
+            # replace 后重新读取文件完整内容以跟踪
+            from pathlib import Path
+            updated_content = Path(file_path).read_text(encoding="utf-8")
+            self._tracked_writes[file_path] = {"content": updated_content, "action": "modify"}
+            return result
 
         return f"未知工具: {name}"
 
@@ -192,6 +217,12 @@ class Coder(BaseAgent):
             label=f"Coder/{task.id}",
         )
 
+        # 优先使用工具循环中实际写入的文件记录（可靠），
+        # 而非 LLM 最终 JSON 输出（可能包含占位符）
+        tracked = tool_executor.tracked_changes
+        if tracked:
+            return CodeChanges.from_dict({"files": tracked})
+        # 回退：如果工具循环未写入任何文件，尝试解析 LLM 输出
         return CodeChanges.from_json(response.content)
 
     def build_system_prompt(

@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from agent_system.agents.analyst import Analyst
+from agent_system.agents.coder import CoderToolExecutor
 from agent_system.models.context import AgentConfig, AgentContext
 from agent_system.models.project_config import PatternMapping, ProjectConfig
 from agent_system.models.task import Task
@@ -130,3 +131,67 @@ class TestAnalystAgent:
         assert "TX" in user_content
         assert "/project/root" in user_content
         assert "/ref1" in user_content
+
+
+class TestCoderToolExecutorTracking:
+    """CoderToolExecutor 文件写入跟踪测试"""
+
+    def test_write_file_tracked(self, tmp_path: Path) -> None:
+        """write_file 调用应被自动跟踪"""
+        executor = CoderToolExecutor()
+        file_path = str(tmp_path / "test.ts")
+
+        executor.execute("write_file", {"path": file_path, "content": "const x = 1;"})
+
+        tracked = executor.tracked_changes
+        assert len(tracked) == 1
+        assert tracked[0]["path"] == file_path
+        assert tracked[0]["content"] == "const x = 1;"
+        assert tracked[0]["action"] == "create"
+
+    def test_multiple_writes_tracked(self, tmp_path: Path) -> None:
+        """多次写入不同文件都应被跟踪"""
+        executor = CoderToolExecutor()
+        f1 = str(tmp_path / "a.ts")
+        f2 = str(tmp_path / "b.ts")
+
+        executor.execute("write_file", {"path": f1, "content": "file a"})
+        executor.execute("write_file", {"path": f2, "content": "file b"})
+
+        tracked = executor.tracked_changes
+        assert len(tracked) == 2
+
+    def test_overwrite_same_file_keeps_latest(self, tmp_path: Path) -> None:
+        """同一文件多次写入应保留最新内容"""
+        executor = CoderToolExecutor()
+        file_path = str(tmp_path / "test.ts")
+
+        executor.execute("write_file", {"path": file_path, "content": "v1"})
+        executor.execute("write_file", {"path": file_path, "content": "v2"})
+
+        tracked = executor.tracked_changes
+        assert len(tracked) == 1
+        assert tracked[0]["content"] == "v2"
+
+    def test_replace_in_file_tracked(self, tmp_path: Path) -> None:
+        """replace_in_file 调用应被跟踪"""
+        executor = CoderToolExecutor()
+        file_path = str(tmp_path / "test.ts")
+        # 先写入原始内容
+        executor.execute("write_file", {"path": file_path, "content": "const x = 1;\nconst y = 2;\n"})
+        # 用 replace 修改
+        executor.execute("replace_in_file", {
+            "path": file_path,
+            "old_text": "const x = 1;",
+            "new_text": "const x = 42;",
+        })
+
+        tracked = executor.tracked_changes
+        assert len(tracked) == 1
+        assert "const x = 42;" in tracked[0]["content"]
+        assert tracked[0]["action"] == "modify"
+
+    def test_no_writes_empty_tracked(self) -> None:
+        """未写入任何文件时 tracked_changes 应为空"""
+        executor = CoderToolExecutor()
+        assert executor.tracked_changes == []
