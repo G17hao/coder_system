@@ -285,6 +285,7 @@ class LLMService:
         """
         current_messages = list(messages)
         final_response: LLMResponse | None = None
+        last_real_response: LLMResponse | None = None  # 最后一次真实 tool-loop 响应
         reflection_done = False
         tag = f"[{label}]" if label else "[LLM]"
 
@@ -303,12 +304,13 @@ class LLMService:
                 reflection_done = True
                 logger.warning(f"    {tag} 已达软限制 ({soft_limit} 轮)，注入反思检查...")
                 reflection_prompt = (
-                    f"[系统提醒] 你已经进行了 {soft_limit} 轮工具调用。请暂停并反思：\n"
-                    f"1. 你当前的任务进展如何？已完成了哪些部分？\n"
+                    f"[系统提醒] 你已经进行了 {soft_limit} 轮工具调用。请简短回答：\n"
+                    f"1. 当前任务进展如何（已完成哪些文件/步骤）？\n"
                     f"2. 是否存在无效循环（反复读同一文件、重复失败的操作）？\n"
                     f"3. 剩余工作是否可以在合理轮次内完成？\n\n"
-                    f"如果你认为任务正在正常推进且需要继续，请回复 'CONTINUE' 并简述剩余计划。\n"
-                    f"如果你认为任务遇到无法解决的阻碍，请直接输出最终结果（不调用工具）。"
+                    f"**重要：只回复以下两种之一，不要输出文件内容或 JSON：**\n"
+                    f"- 回复 'CONTINUE: <一句话说明剩余计划>' — 任务正在推进，需要继续使用工具\n"
+                    f"- 回复 'DONE: <一句话说明完成情况>' — 所有文件已通过工具写入磁盘，无需再调用工具"
                 )
                 current_messages.append({"role": "user", "content": reflection_prompt})
                 if conversation_log is not None:
@@ -332,8 +334,12 @@ class LLMService:
                     logger.info(f"    {tag} LLM 确认继续，放行至硬上限")
                     continue
                 else:
-                    logger.info(f"    {tag} LLM 选择停止")
-                    final_response = reflection_response
+                    logger.info(f"    {tag} LLM 完成 (DONE)，退出工具循环")
+                    # 使用反思前最后一次真实 tool-loop 响应，确保 from_json 有可用内容
+                    if last_real_response is not None:
+                        final_response = last_real_response
+                    else:
+                        final_response = reflection_response
                     break
 
             call_start = time.time()
@@ -350,6 +356,7 @@ class LLMService:
                 f"{call_elapsed:.1f}s"
             )
             final_response = response
+            last_real_response = response  # 记录最后一次真实 tool-loop 响应
 
             if not response.tool_calls:
                 logger.info(f"    {tag} 完成 (共 {iteration + 1} 轮)")
