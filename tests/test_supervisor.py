@@ -198,6 +198,25 @@ class TestOrchestratorSupervisorIntegration:
         assert task.status == TaskStatus.BLOCKED
         assert "Supervisor" in (task.error or "")
 
+    def test_supervisor_halt_persists_state_for_resume(self) -> None:
+        """Supervisor halt 后应立即落盘，下次可从状态文件恢复"""
+        task = Task(id="T0", title="Test", description="desc", max_retries=1)
+        fail = ReviewResult(passed=False, issues=["persistent error"])
+        decision = SupervisorDecision(action="halt", reason="需要人工介入")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "tasks.json"
+
+            orch = self._make_orchestrator([task], [fail], decision)
+            orch._state_store = StateStore(state_path)
+            orch.run_single_task(task)
+
+            loaded = StateStore(state_path).load()
+            assert len(loaded) == 1
+            assert loaded[0].id == "T0"
+            assert loaded[0].status == TaskStatus.BLOCKED
+            assert loaded[0].retry_count >= 1
+
     def test_supervisor_continue_adds_retries_and_succeeds(self) -> None:
         """Supervisor 决定 continue → 追加重试次数 → 最终通过"""
         task = Task(id="T0", title="Test", description="desc", max_retries=1)

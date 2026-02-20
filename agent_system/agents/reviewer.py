@@ -131,7 +131,7 @@ class Reviewer(BaseAgent):
         # 如果 coder 没有产出任何文件，直接 PASS
         if not code_changes or not code_changes.files:
             logger.info("  [审查] Coder 无文件产出，自动通过")
-            return ReviewResult(passed=True, issues=[], suggestions=[])
+            return ReviewResult(passed=True, issues=[], suggestions=[], context_for_coder="")
 
         changed_files_section = (
             f"## 本次变更文件列表\n\n"
@@ -294,6 +294,7 @@ class Reviewer(BaseAgent):
                     passed=data.get("passed", False),
                     issues=data.get("issues", []),
                     suggestions=data.get("suggestions", []),
+                    context_for_coder=data.get("context_for_coder", ""),
                 )
             except json.JSONDecodeError:
                 pass
@@ -308,6 +309,7 @@ class Reviewer(BaseAgent):
                     passed=data.get("passed", False),
                     issues=data.get("issues", []),
                     suggestions=data.get("suggestions", []),
+                    context_for_coder=data.get("context_for_coder", ""),
                 )
         except json.JSONDecodeError:
             pass
@@ -315,7 +317,7 @@ class Reviewer(BaseAgent):
         # 回退：根据关键字推断
         content_lower = content.lower()
         if '"passed": true' in content_lower or '"passed":true' in content_lower:
-            return ReviewResult(passed=True, issues=[], suggestions=[])
+            return ReviewResult(passed=True, issues=[], suggestions=[], context_for_coder="")
 
         # 无法解析，记录原始内容前 200 字帮助调试
         preview = content[:200].replace("\n", " ")
@@ -324,4 +326,5 @@ class Reviewer(BaseAgent):
             passed=False,
             issues=[f"无法解析审查结果（LLM 输出前200字: {preview}）"],
             suggestions=["检查 Reviewer LLM 是否正确输出了 JSON 格式的审查结果"],
+            context_for_coder="",
         )

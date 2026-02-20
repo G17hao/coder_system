@@ -24,6 +24,7 @@ class ReviewResult:
     passed: bool
     issues: list[str] = field(default_factory=list)
     suggestions: list[str] = field(default_factory=list)
+    context_for_coder: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -34,6 +35,7 @@ class ReviewResult:
             passed=data["passed"],
             issues=data.get("issues", []),
             suggestions=data.get("suggestions", []),
+            context_for_coder=data.get("context_for_coder", ""),
         )
 
 

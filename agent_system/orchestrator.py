@@ -417,6 +417,9 @@ class Orchestrator:
 
         finally:
             self._context.current_task = None
+            # 无论通过 run() 还是直接 run_single_task() 调用，
+            # 任务收敛后都立即落盘，确保下次可从断点恢复。
+            self._save_state()
 
     def _validate_alignment(self, task: Task, changes: CodeChanges | None) -> tuple[list[str], list[str]]:
         """审查补充校验：覆盖性 + 一致性
