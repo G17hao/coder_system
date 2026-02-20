@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_system.agents.analyst import Analyst
-from agent_system.agents.coder import Coder, CodeChanges
+from agent_system.agents.coder import Coder, CodeChanges, FileChange
 from agent_system.agents.planner import CyclicDependencyError, DependencyStatus, Planner
 from agent_system.agents.reflector import Reflector, save_reflection
 from agent_system.agents.reviewer import Reviewer
@@ -301,23 +301,26 @@ class Orchestrator:
                         self._refresh_task_modified_files(task, changes)
                         task.coder_output = "{dry_run: true}"
 
-                    # 5.1 编码空输出检测 → 跳过审查，直接重试
                     if not self._config.dry_run and not changes.files:
-                        logger.warning(
-                            f"  [编码] Coder 输出空文件列表，跳过审查直接重试"
-                        )
-                        task.retry_count += 1
-                        if (
-                            task.retry_count > _RETRY_FUSE_THRESHOLD
-                            and not supervised
-                            and not self._config.dry_run
-                            and self._supervisor is not None
-                        ):
-                            logger.warning(
-                                f"  [fuse] 任务 {task.id} 已重试 {task.retry_count} 次，触发 Supervisor 根因分析"
+                        fallback_paths = [
+                            self._normalize_file_path(path)
+                            for path in task.modified_files
+                            if self._normalize_file_path(path)
+                        ]
+                        if fallback_paths:
+                            changes.files = [
+                                FileChange(path=path, action="modify")
+                                for path in fallback_paths
+                            ]
+                            if not changes.review_files:
+                                changes.review_files = list(fallback_paths)
+                            logger.info(
+                                "  [编码] Coder 输出空文件列表，已回填累计文件列表后进入审查"
                             )
-                            break
-                        continue
+                        else:
+                            logger.info(
+                                "  [编码] Coder 输出空文件列表，且无累计文件可回填，继续进入审查阶段由 Reviewer 判定"
+                            )
 
                     # 6. 写入文件（Coder 工具循环已直接写入磁盘，这里仅做兜底）
                     if not self._config.dry_run:

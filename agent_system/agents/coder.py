@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any
@@ -18,6 +19,7 @@ from agent_system.tools.grep_content import GREP_CONTENT_TOOL_DEFINITION
 from agent_system.tools.list_directory import LIST_DIRECTORY_TOOL_DEFINITION
 from agent_system.tools.replace_in_file import REPLACE_IN_FILE_TOOL_DEFINITION
 from agent_system.tools.todo_list import TODO_LIST_TOOL_DEFINITION
+from agent_system.tools.run_command import RUN_COMMAND_TOOL_DEFINITION, run_command_tool
 
 
 @dataclass
@@ -100,6 +102,27 @@ class CoderToolExecutor:
         # TODO 列表状态（跨工具调用持久）
         self._todo_items: list[dict[str, Any]] = []
         self._guard = PathGuard(allowed_roots=allowed_roots, default_base_dir=default_base_dir)
+
+    _DANGEROUS_COMMAND_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+        (re.compile(r"(^|[;&|])\s*rm\s+", re.IGNORECASE), "检测到 rm 删除命令"),
+        (re.compile(r"(^|[;&|])\s*del\s+", re.IGNORECASE), "检测到 del 删除命令"),
+        (re.compile(r"(^|[;&|])\s*erase\s+", re.IGNORECASE), "检测到 erase 删除命令"),
+        (re.compile(r"(^|[;&|])\s*(rmdir|rd)\s+", re.IGNORECASE), "检测到目录删除命令"),
+        (re.compile(r"\bremove-item\b", re.IGNORECASE), "检测到 Remove-Item 删除命令"),
+        (re.compile(r"\bunlink\b", re.IGNORECASE), "检测到 unlink 删除命令"),
+        (re.compile(r"\bgit\s+clean\b", re.IGNORECASE), "检测到 git clean 高危命令"),
+        (re.compile(r"\bgit\s+reset\s+--hard\b", re.IGNORECASE), "检测到 git reset --hard 高危命令"),
+    ]
+
+    @classmethod
+    def _detect_dangerous_command(cls, command: str) -> str | None:
+        normalized = command.strip()
+        if not normalized:
+            return "命令为空"
+        for pattern, reason in cls._DANGEROUS_COMMAND_PATTERNS:
+            if pattern.search(normalized):
+                return reason
+        return None
 
     @property
     def tracked_changes(self) -> list[dict[str, str]]:
@@ -259,6 +282,34 @@ class CoderToolExecutor:
                 _state=self._todo_items,
             )
 
+        elif name == "run_command":
+            command = str(tool_input.get("command", ""))
+            reason = self._detect_dangerous_command(command)
+            if reason:
+                return f"错误: 已拦截高危命令执行 ({reason})"
+
+            cwd = tool_input.get("cwd")
+            normalized_cwd: str | None = None
+            warning = ""
+            if isinstance(cwd, str) and cwd.strip():
+                normalized_cwd, warning = self._guard.clamp_dir(cwd)
+
+            result = run_command_tool(
+                command=command,
+                cwd=normalized_cwd,
+                timeout=tool_input.get("timeout", 0),
+                stdin_input=tool_input.get("stdin_input"),
+                interactive=False,
+            )
+            output = f"exit_code: {result.exit_code}\n"
+            if warning:
+                output += f"warning: {warning}\n"
+            if result.stdout:
+                output += f"stdout:\n{result.stdout}\n"
+            if result.stderr:
+                output += f"stderr:\n{result.stderr}\n"
+            return output
+
         return f"未知工具: {name}"
 
 
@@ -299,6 +350,7 @@ class Coder(BaseAgent):
             GREP_CONTENT_TOOL_DEFINITION,
             LIST_DIRECTORY_TOOL_DEFINITION,
             REPLACE_IN_FILE_TOOL_DEFINITION,
+            RUN_COMMAND_TOOL_DEFINITION,
         ]
         allowed_roots = [context.project.project_root] + list(context.project.reference_roots)
         tool_executor = CoderToolExecutor(

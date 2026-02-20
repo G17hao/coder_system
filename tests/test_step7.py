@@ -241,6 +241,74 @@ class TestRetryLogic:
         assert task.status == TaskStatus.FAILED
         assert task.retry_count == 3
 
+    def test_empty_coder_output_goes_to_reviewer(self) -> None:
+        """Coder 空输出时不应直接重试，应交给 Reviewer 判定"""
+        planner, analyst, _, _ = _make_mock_agents()
+
+        coder = MagicMock(spec=Coder)
+        coder.execute.return_value = CodeChanges(files=[])
+
+        reviewer = MagicMock(spec=Reviewer)
+        reviewer.execute.return_value = ReviewResult(passed=True)
+
+        task = Task(id="T0", title="Test", description="desc")
+        ctx = _make_context([task], dry_run=False)
+
+        orch = Orchestrator(
+            config=ctx.config,
+            planner=planner,
+            analyst=analyst,
+            coder=coder,
+            reviewer=reviewer,
+            context=ctx,
+        )
+        orch._state_store = StateStore(Path(tempfile.mktemp(suffix=".json")))
+        orch._file_service = MagicMock()
+        orch._git = MagicMock()
+        orch._git.has_changes.return_value = False
+
+        orch.run_single_task(task)
+
+        assert reviewer.execute.call_count == 1
+        assert task.status == TaskStatus.DONE
+        assert task.retry_count == 0
+
+    def test_empty_coder_output_uses_accumulated_modified_files(self) -> None:
+        """Coder 空输出时，应使用 task.modified_files 回填审查文件列表"""
+        planner, analyst, _, _ = _make_mock_agents()
+
+        coder = MagicMock(spec=Coder)
+        coder.execute.return_value = CodeChanges(files=[])
+
+        reviewer = MagicMock(spec=Reviewer)
+        reviewer.execute.return_value = ReviewResult(passed=True)
+
+        task = Task(id="T0", title="Test", description="desc")
+        task.modified_files = ["src/a.ts", "src/b.ts"]
+        ctx = _make_context([task], dry_run=False)
+
+        orch = Orchestrator(
+            config=ctx.config,
+            planner=planner,
+            analyst=analyst,
+            coder=coder,
+            reviewer=reviewer,
+            context=ctx,
+        )
+        orch._state_store = StateStore(Path(tempfile.mktemp(suffix=".json")))
+        orch._file_service = MagicMock()
+        orch._git = MagicMock()
+        orch._git.has_changes.return_value = False
+
+        orch.run_single_task(task)
+
+        assert reviewer.execute.call_count == 1
+        _, kwargs = reviewer.execute.call_args
+        code_changes = kwargs.get("code_changes")
+        assert code_changes is not None
+        assert [f.path for f in code_changes.files] == ["src/a.ts", "src/b.ts"]
+        assert task.status == TaskStatus.DONE
+
 
 class TestBreakpointResume:
     """断点恢复测试"""

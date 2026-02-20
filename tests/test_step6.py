@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent_system.agents.coder import CodeChanges, FileChange
+from agent_system.agents.coder import CodeChanges, FileChange, CoderToolExecutor
 from agent_system.agents.reviewer import Reviewer
 from agent_system.models.context import AgentConfig, AgentContext
 from agent_system.models.project_config import ProjectConfig
@@ -47,6 +47,43 @@ class TestRunCommandTool:
         """success 属性正确"""
         result = run_command_tool("echo ok")
         assert result.success is True
+
+
+class TestCoderRunCommandSafety:
+    """Coder 的 run_command 安全拦截测试"""
+
+    def test_coder_run_command_allows_safe_command(self, tmp_path: Path) -> None:
+        """安全命令可执行"""
+        executor = CoderToolExecutor(
+            allowed_roots=[str(tmp_path)],
+            default_base_dir=str(tmp_path),
+        )
+        result = executor.execute("run_command", {"command": "echo hello"})
+        assert "exit_code: 0" in result
+        assert "hello" in result.lower()
+
+    def test_coder_run_command_blocks_delete_file(self, tmp_path: Path) -> None:
+        """删除命令应被拦截"""
+        target = tmp_path / "to_delete.txt"
+        target.write_text("keep", encoding="utf-8")
+
+        executor = CoderToolExecutor(
+            allowed_roots=[str(tmp_path)],
+            default_base_dir=str(tmp_path),
+        )
+
+        result = executor.execute("run_command", {"command": f"del {target}"})
+        assert "已拦截高危命令" in result
+        assert target.exists()
+
+    def test_coder_run_command_blocks_remove_item(self, tmp_path: Path) -> None:
+        """PowerShell 删除命令应被拦截"""
+        executor = CoderToolExecutor(
+            allowed_roots=[str(tmp_path)],
+            default_base_dir=str(tmp_path),
+        )
+        result = executor.execute("run_command", {"command": "Remove-Item test.txt"})
+        assert "已拦截高危命令" in result
 
 
 class TestReviewerAgent:
