@@ -12,6 +12,7 @@ from agent_system.agents.coder import Coder, CodeChanges
 from agent_system.agents.planner import CyclicDependencyError, DependencyStatus, Planner
 from agent_system.agents.reflector import Reflector, save_reflection
 from agent_system.agents.reviewer import Reviewer
+from agent_system.agents.supervisor import Supervisor, SupervisorDecision
 from agent_system.models.context import AgentConfig, AgentContext
 from agent_system.models.project_config import ProjectConfig
 from agent_system.models.task import ReviewResult, Task, TaskStatus
@@ -43,6 +44,7 @@ class Orchestrator:
         coder: Coder | None = None,
         reviewer: Reviewer | None = None,
         reflector: Reflector | None = None,
+        supervisor: Supervisor | None = None,
         context: AgentContext | None = None,
     ) -> None:
         self._config = config
@@ -54,6 +56,7 @@ class Orchestrator:
         self._coder = coder
         self._reviewer = reviewer
         self._reflector = reflector
+        self._supervisor = supervisor
 
         self._llm: LLMService | None = None
         self._state_store: StateStore | None = None
@@ -116,6 +119,7 @@ class Orchestrator:
             self._coder = Coder(llm=llm)
             self._reviewer = Reviewer(llm=llm)
             self._reflector = Reflector(llm=llm)
+            self._supervisor = Supervisor(llm=llm)
 
     def init_tasks(self) -> None:
         """从项目配置的 initial_tasks 创建初始任务队列"""
@@ -252,70 +256,107 @@ class Orchestrator:
                 else:
                     task.analysis_cache = '{"dry_run": true}'
 
-            # 5~7. 编码→审查循环（含重试）
-            while task.retry_count < task.max_retries:
-                # 5. 编码阶段
-                logger.info(f"  [编码] 编码中... (尝试 {task.retry_count + 1}/{task.max_retries})")
+            # 5~7. 编码→审查循环（含重试 + Supervisor 介入）
+            supervised = False  # Supervisor 每次任务执行中至多介入一次
+            while True:
+                # 内层：Coder → Reviewer 重试循环
+                while task.retry_count < task.max_retries:
+                    # 5. 编码阶段
+                    logger.info(f"  [编码] 编码中... (尝试 {task.retry_count + 1}/{task.max_retries})")
+                    if not self._config.dry_run:
+                        conv_log = self._start_conversation(task, "coder")
+                        changes = self._coder.execute(
+                            task,
+                            self._context,
+                            analysis_report=task.analysis_cache or "",
+                            conversation_log=conv_log,
+                        )
+                        self._save_conversation()
+                        task.coder_output = str(changes.to_dict())
+                        self._sync_llm_usage()
+                    else:
+                        changes = CodeChanges(files=[])
+                        task.coder_output = "{dry_run: true}"
+
+                    # 5.1 编码空输出检测 → 跳过审查，直接重试
+                    if not self._config.dry_run and not changes.files:
+                        logger.warning(
+                            f"  [编码] Coder 输出空文件列表，跳过审查直接重试"
+                        )
+                        task.retry_count += 1
+                        continue
+
+                    # 6. 写入文件（Coder 工具循环已直接写入磁盘，这里仅做兜底）
+                    if not self._config.dry_run:
+                        self._write_changes(changes)
+
+                    # 7. 审查阶段
+                    logger.info(f"  [审查] 审查中...")
+                    if not self._config.dry_run:
+                        conv_log = self._start_conversation(task, "reviewer")
+                        result = self._reviewer.execute(
+                            task, self._context, code_changes=changes,
+                            conversation_log=conv_log,
+                        )
+                        self._save_conversation()
+                        self._sync_llm_usage()
+                    else:
+                        result = ReviewResult(passed=True)
+
+                    task.review_result = result
+
+                    if result.passed:
+                        # 成功: LLM 生成 commit message 并提交
+                        commit_hash = self._git_commit(task, changes)
+                        task.status = TaskStatus.DONE
+                        task.commit_hash = commit_hash
+                        self._context.completed_tasks[task.id] = task
+                        logger.info(f"  [done] 任务 {task.id} 完成 (commit: {commit_hash or 'N/A'})")
+                        self._run_reflection(task)
+                        return
+                    else:
+                        # 失败: 保留文件，让 Coder 在下次重试时修复
+                        logger.warning(
+                            f"  [fail] 审查未通过 ({len(result.issues)} 个问题)，保留文件供下轮修复"
+                        )
+                        task.retry_count += 1
+
+                # 内层重试耗尽 —— 判断是否需要 Supervisor
+                if supervised or self._config.dry_run or self._supervisor is None:
+                    break  # 不再介入，直接走 FAILED 流程
+
+                # Supervisor 介入
+                logger.info(f"  [supervisor] 重试耗尽，Supervisor 介入判断...")
+                supervised = True
                 if not self._config.dry_run:
-                    conv_log = self._start_conversation(task, "coder")
-                    changes = self._coder.execute(
-                        task,
-                        self._context,
-                        analysis_report=task.analysis_cache or "",
-                        conversation_log=conv_log,
+                    conv_log = self._start_conversation(task, "supervisor")
+                    decision: SupervisorDecision = self._supervisor.execute(
+                        task, self._context, conversation_log=conv_log,
                     )
                     self._save_conversation()
-                    task.coder_output = str(changes.to_dict())
                     self._sync_llm_usage()
                 else:
-                    changes = CodeChanges(files=[])
-                    task.coder_output = "{dry_run: true}"
+                    decision = SupervisorDecision(action="halt", reason="dry_run")
 
-                # 5.1 编码空输出检测 → 跳过审查，直接重试
-                if not self._config.dry_run and not changes.files:
+                if decision.action == "halt":
+                    task.status = TaskStatus.BLOCKED
+                    task.error = f"[Supervisor] {decision.reason}"
                     logger.warning(
-                        f"  [编码] Coder 输出空文件列表，跳过审查直接重试"
+                        f"  [supervisor] 任务 {task.id} 暂停，等待人工介入\n"
+                        f"  原因: {decision.reason}"
                     )
-                    task.retry_count += 1
-                    continue
-
-                # 6. 写入文件（Coder 工具循环已直接写入磁盘，这里仅做兜底）
-                if not self._config.dry_run:
-                    self._write_changes(changes)
-
-                # 7. 审查阶段
-                logger.info(f"  [审查] 审查中...")
-                if not self._config.dry_run:
-                    conv_log = self._start_conversation(task, "reviewer")
-                    result = self._reviewer.execute(
-                        task, self._context, code_changes=changes,
-                        conversation_log=conv_log,
-                    )
-                    self._save_conversation()
-                    self._sync_llm_usage()
-                else:
-                    result = ReviewResult(passed=True)
-
-                task.review_result = result
-
-                if result.passed:
-                    # 成功: LLM 生成 commit message 并提交
-                    commit_hash = self._git_commit(task, changes)
-                    task.status = TaskStatus.DONE
-                    task.commit_hash = commit_hash
-                    self._context.completed_tasks[task.id] = task
-                    logger.info(f"  [done] 任务 {task.id} 完成 (commit: {commit_hash or 'N/A'})")
                     self._run_reflection(task)
                     return
-                else:
-                    # 失败: 保留文件，让 Coder 在下次重试时修复 reviewer 指出的问题
-                    # 不再调用 _revert_changes()，避免浪费 Coder 的所有工作
-                    logger.warning(
-                        f"  [fail] 审查未通过 ({len(result.issues)} 个问题)，保留文件供下轮修复"
+                else:  # continue
+                    task.max_retries += decision.extra_retries
+                    task.supervisor_hint = decision.hint
+                    logger.info(
+                        f"  [supervisor] 追加 {decision.extra_retries} 次重试，"
+                        f"修复提示: {decision.hint[:120]}"
                     )
-                    task.retry_count += 1
+                    # 重新进入外层循环 → 内层 while 继续执行
 
-            # 超过最大重试次数
+            # 重试耗尽（含 Supervisor 追加机会）仍失败
             task.status = TaskStatus.FAILED
             task.error = "\n".join(
                 task.review_result.issues if task.review_result else ["超过最大重试次数"]

@@ -53,9 +53,10 @@ class Task:
     coder_output: str | None = None
     review_result: ReviewResult | None = None
     retry_count: int = 0
-    max_retries: int = 10
+    max_retries: int = 20
     error: str | None = None
     commit_hash: str | None = None
+    supervisor_hint: str | None = None
 
     def to_dict(self) -> dict:
         """序列化为字典"""
@@ -85,9 +86,10 @@ class Task:
             coder_output=data.get("coder_output"),
             review_result=review_result,
             retry_count=data.get("retry_count", 0),
-            max_retries=data.get("max_retries", 3),
+            max_retries=data.get("max_retries", 20),
             error=data.get("error"),
             commit_hash=data.get("commit_hash"),
+            supervisor_hint=data.get("supervisor_hint"),
         )
 
     def to_json(self) -> str:

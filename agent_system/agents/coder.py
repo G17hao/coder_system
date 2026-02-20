@@ -277,10 +277,17 @@ class Coder(BaseAgent):
         """构建用户消息"""
         retry_info = ""
         if task.retry_count > 0 and task.review_result:
+            supervisor_hint_text = ""
+            if task.supervisor_hint:
+                supervisor_hint_text = (
+                    f"\n**[Supervisor 修复指引]** 请优先执行以下修复方向：\n"
+                    f"{task.supervisor_hint}\n"
+                )
             retry_info = (
                 f"\n## 上次审查失败信息（重试 {task.retry_count}）\n\n"
                 f"**重要：上次编写的代码文件仍保留在磁盘上，你只需要修复下面的问题，不要从头重写所有文件。**\n"
-                f"请先用 read_file 查看相关文件当前内容，然后用 replace_in_file 精确修复问题部分。\n\n"
+                f"请先用 read_file 查看相关文件当前内容，然后用 replace_in_file 精确修复问题部分。\n"
+                f"{supervisor_hint_text}\n"
                 f"问题: {json.dumps(task.review_result.issues, ensure_ascii=False)}\n"
                 f"建议: {json.dumps(task.review_result.suggestions, ensure_ascii=False)}\n"
             )
