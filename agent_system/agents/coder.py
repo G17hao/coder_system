@@ -305,11 +305,18 @@ class Coder(BaseAgent):
         retry_info = ""
         if task.retry_count > 0 and task.review_result:
             supervisor_hint_text = ""
+            supervisor_plan_text = ""
             reviewer_context_text = ""
             if task.supervisor_hint:
                 supervisor_hint_text = (
                     f"\n**[Supervisor 修复指引]** 请优先执行以下修复方向：\n"
                     f"{task.supervisor_hint}\n"
+                )
+            if task.supervisor_plan:
+                supervisor_plan_text = (
+                    f"\n**[Supervisor 重规划]** 以下是监督阶段输出的执行计划，"
+                    f"请严格按清单推进；仅在计划中的未知项上补充信息获取：\n"
+                    f"{task.supervisor_plan}\n"
                 )
             if task.review_result.context_for_coder.strip():
                 reviewer_context_text = (
@@ -322,6 +329,7 @@ class Coder(BaseAgent):
                 f"**重要：上次编写的代码文件仍保留在磁盘上，你只需要修复下面的问题，不要从头重写所有文件。**\n"
                 f"请先用 read_file 查看相关文件当前内容，然后用 replace_in_file 精确修复问题部分。\n"
                 f"{supervisor_hint_text}\n"
+                f"{supervisor_plan_text}\n"
                 f"{reviewer_context_text}\n"
                 f"问题: {json.dumps(task.review_result.issues, ensure_ascii=False)}\n"
                 f"建议: {json.dumps(task.review_result.suggestions, ensure_ascii=False)}\n"

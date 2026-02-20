@@ -59,6 +59,7 @@ class Task:
     error: str | None = None
     commit_hash: str | None = None
     supervisor_hint: str | None = None
+    supervisor_plan: str | None = None
 
     def to_dict(self) -> dict:
         """序列化为字典"""
@@ -92,6 +93,7 @@ class Task:
             error=data.get("error"),
             commit_hash=data.get("commit_hash"),
             supervisor_hint=data.get("supervisor_hint"),
+            supervisor_plan=data.get("supervisor_plan"),
         )
 
     def to_json(self) -> str:

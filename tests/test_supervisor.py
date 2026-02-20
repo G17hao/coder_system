@@ -113,6 +113,28 @@ class TestSupervisorAgent:
         assert decision.action == "continue"
         assert decision.hint == "fix line 5"
 
+    def test_parse_continue_with_structured_plan(self) -> None:
+        """continue 决策可解析结构化重规划字段"""
+        content = (
+            '{"action":"continue","reason":"可修复","hint":"先修接口","extra_retries":2,'
+            '"plan_summary":"先统一接口，再修调用方",'
+            '"must_change_files":["a.ts","b.ts"],'
+            '"execution_checklist":["修复接口","修复调用方"],'
+            '"validation_steps":["npx tsc --noEmit"],'
+            '"unknowns":["确认是否允许改公共接口"]}'
+        )
+        supervisor = self._make_supervisor(content)
+        task = Task(id="T1", title="test", description="desc")
+        ctx = _make_context()
+
+        decision = supervisor.execute(task, ctx)
+
+        assert decision.plan_summary == "先统一接口，再修调用方"
+        assert decision.must_change_files == ["a.ts", "b.ts"]
+        assert decision.execution_checklist == ["修复接口", "修复调用方"]
+        assert decision.validation_steps == ["npx tsc --noEmit"]
+        assert decision.unknowns == ["确认是否允许改公共接口"]
+
     def test_supervisor_hint_included_in_user_message(self) -> None:
         """任务有 supervisor_hint 时，user message 中包含上次提示"""
         mock_llm = MagicMock()
@@ -304,6 +326,34 @@ class TestOrchestratorSupervisorIntegration:
 
         # hint 应被记录到 task
         assert task.supervisor_hint == "具体修复提示"
+
+    def test_supervisor_continue_stores_replan_on_task(self) -> None:
+        """Supervisor continue 时应把重规划文本落到 task.supervisor_plan"""
+        task = Task(id="T0", title="Test", description="desc", max_retries=1)
+        fail = ReviewResult(passed=False, issues=["error"])
+        decision = SupervisorDecision(
+            action="continue",
+            reason="ok",
+            hint="先修复类型定义",
+            extra_retries=2,
+            plan_summary="先修接口，再跑编译",
+            must_change_files=["core/a.ts"],
+            execution_checklist=["修复 core/a.ts 类型", "修复调用方"],
+            validation_steps=["npx tsc --noEmit"],
+            unknowns=["确认接口边界"],
+        )
+
+        orch = self._make_orchestrator([task], [fail, ReviewResult(passed=True)], decision)
+        orch._git = MagicMock()
+        orch._git.has_changes.return_value = False
+
+        orch.run_single_task(task)
+
+        assert task.status == TaskStatus.DONE
+        assert task.supervisor_plan is not None
+        assert "计划摘要: 先修接口，再跑编译" in task.supervisor_plan
+        assert "必须修改文件:" in task.supervisor_plan
+        assert "验证步骤:" in task.supervisor_plan
 
     def test_supervisor_only_intervenes_once(self) -> None:
         """Supervisor 每次任务执行中最多介入一次"""

@@ -392,10 +392,16 @@ class Orchestrator:
                 else:  # continue
                     task.max_retries += decision.extra_retries
                     task.supervisor_hint = decision.hint
+                    task.supervisor_plan = self._build_supervisor_plan_text(decision)
                     logger.info(
                         f"  [supervisor] 追加 {decision.extra_retries} 次重试，"
                         f"修复提示: {decision.hint[:120]}"
                     )
+                    if task.supervisor_plan:
+                        logger.info(
+                            f"  [supervisor] 已生成重规划（{len(task.supervisor_plan)} 字符），"
+                            f"下一轮将强制注入 Coder"
+                        )
                     # 重新进入外层循环 → 内层 while 继续执行
 
             # 重试耗尽（含 Supervisor 追加机会）仍失败
@@ -588,6 +594,7 @@ class Orchestrator:
                 task.status = TaskStatus.PENDING
                 task.error = None
                 task.retry_count = 0
+                task.supervisor_plan = None
                 count += 1
         if count:
             logger.info(f"已重置 {count} 个失败/阻塞任务为 pending")
@@ -638,6 +645,7 @@ class Orchestrator:
 
         # 重置任务状态，附加用户提示词
         task.supervisor_hint = hint
+        task.supervisor_plan = None
         task.status = TaskStatus.PENDING
         task.retry_count = 0
         task.error = None
@@ -653,6 +661,30 @@ class Orchestrator:
         usage = self._llm.usage
         self._context.total_tokens_used = usage.total
         self._context.total_api_calls = usage.total_calls
+
+    @staticmethod
+    def _build_supervisor_plan_text(decision: SupervisorDecision) -> str:
+        """将 Supervisor 结构化决策渲染为可直接注入 Coder 的计划文本"""
+        if decision.action != "continue":
+            return ""
+
+        lines: list[str] = []
+        if decision.plan_summary:
+            lines.append(f"计划摘要: {decision.plan_summary}")
+        if decision.must_change_files:
+            lines.append("必须修改文件:")
+            lines.extend(f"- {path}" for path in decision.must_change_files)
+        if decision.execution_checklist:
+            lines.append("执行清单:")
+            lines.extend(f"- {item}" for item in decision.execution_checklist)
+        if decision.validation_steps:
+            lines.append("验证步骤:")
+            lines.extend(f"- {step}" for step in decision.validation_steps)
+        if decision.unknowns:
+            lines.append("未知信息(需补充):")
+            lines.extend(f"- {item}" for item in decision.unknowns)
+
+        return "\n".join(lines).strip()
 
     def _create_llm(self) -> LLMService:
         """创建 LLM 服务实例"""
