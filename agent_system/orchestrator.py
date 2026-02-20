@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import os
+import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +25,8 @@ from agent_system.services.llm import LLMService
 from agent_system.services.state_store import StateStore
 
 logger = logging.getLogger(__name__)
+
+_RETRY_FUSE_THRESHOLD = 3
 
 
 class Orchestrator:
@@ -292,6 +296,16 @@ class Orchestrator:
                             f"  [编码] Coder 输出空文件列表，跳过审查直接重试"
                         )
                         task.retry_count += 1
+                        if (
+                            task.retry_count > _RETRY_FUSE_THRESHOLD
+                            and not supervised
+                            and not self._config.dry_run
+                            and self._supervisor is not None
+                        ):
+                            logger.warning(
+                                f"  [fuse] 任务 {task.id} 已重试 {task.retry_count} 次，触发 Supervisor 根因分析"
+                            )
+                            break
                         continue
 
                     # 6. 写入文件（Coder 工具循环已直接写入磁盘，这里仅做兜底）
@@ -311,6 +325,16 @@ class Orchestrator:
                     else:
                         result = ReviewResult(passed=True)
 
+                    # 7.1 覆盖性 + 一致性校验（分析缺口/任务描述/改动文件三方对齐）
+                    alignment_issues, alignment_suggestions = self._validate_alignment(task, changes)
+                    if alignment_issues:
+                        result.passed = False
+                        result.issues.extend(alignment_issues)
+                        result.suggestions.extend(alignment_suggestions)
+                        logger.warning(
+                            f"  [审查] 一致性校验未通过 ({len(alignment_issues)} 个问题)"
+                        )
+
                     task.review_result = result
 
                     if result.passed:
@@ -328,6 +352,16 @@ class Orchestrator:
                             f"  [fail] 审查未通过 ({len(result.issues)} 个问题)，保留文件供下轮修复"
                         )
                         task.retry_count += 1
+                        if (
+                            task.retry_count > _RETRY_FUSE_THRESHOLD
+                            and not supervised
+                            and not self._config.dry_run
+                            and self._supervisor is not None
+                        ):
+                            logger.warning(
+                                f"  [fuse] 任务 {task.id} 已重试 {task.retry_count} 次，触发 Supervisor 根因分析"
+                            )
+                            break
 
                 # 内层重试耗尽 —— 判断是否需要 Supervisor
                 if supervised or self._config.dry_run or self._supervisor is None:
@@ -383,6 +417,126 @@ class Orchestrator:
 
         finally:
             self._context.current_task = None
+
+    def _validate_alignment(self, task: Task, changes: CodeChanges | None) -> tuple[list[str], list[str]]:
+        """审查补充校验：覆盖性 + 一致性
+
+        Returns:
+            (issues, suggestions)
+        """
+        if changes is None:
+            return (["[一致性校验] 缺少编码产物，无法验证任务完成度"], ["请确保 Coder 产出有效文件变更"])
+
+        changed_files = {
+            self._normalize_file_path(f.path)
+            for f in changes.files
+            if getattr(f, "path", None)
+        }
+
+        analysis_data = self._parse_analysis_json(task.analysis_cache or "")
+        if not analysis_data:
+            return ([], [])
+
+        issues: list[str] = []
+        suggestions: list[str] = []
+
+        # 覆盖性校验：分析阶段识别的关键文件是否被覆盖
+        key_files = self._extract_key_files(analysis_data)
+        if key_files:
+            missing = [f for f in key_files if f not in changed_files]
+            if missing:
+                issues.append(
+                    "[覆盖性校验] 分析识别的关键文件未被覆盖: "
+                    + ", ".join(missing[:8])
+                )
+                suggestions.append("请优先修改分析阶段标记的关键文件，并在输出中说明修复对应关系")
+
+        # 一致性校验：任务描述 / 分析缺口 / 改动文件三方对齐
+        # 规则：若分析缺口中出现明确文件路径，这些路径应在改动列表中出现
+        gap_files = self._extract_gap_file_refs(analysis_data)
+        if gap_files:
+            unresolved_gap_files = [f for f in gap_files if f not in changed_files]
+            if unresolved_gap_files:
+                issues.append(
+                    "[一致性校验] 分析缺口指向的文件未被修改: "
+                    + ", ".join(unresolved_gap_files[:8])
+                )
+                suggestions.append("请逐条对齐分析 gaps，与本次改动文件建立一一对应关系")
+
+        return (issues, suggestions)
+
+    def _parse_analysis_json(self, analysis_text: str) -> dict[str, Any] | None:
+        """从 Analyst 文本中提取 JSON 结构。"""
+        if not analysis_text:
+            return None
+
+        code_block_match = re.search(r"```(?:json)?\s*(\{[\s\S]*\})\s*```", analysis_text)
+        candidates: list[str] = []
+        if code_block_match:
+            candidates.append(code_block_match.group(1))
+
+        start = analysis_text.find("{")
+        end = analysis_text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            candidates.append(analysis_text[start:end + 1])
+
+        for candidate in candidates:
+            try:
+                data = json.loads(candidate)
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                continue
+        return None
+
+    def _extract_key_files(self, analysis_data: dict[str, Any]) -> list[str]:
+        files = analysis_data.get("files", [])
+        if not isinstance(files, list):
+            return []
+
+        result: list[str] = []
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            path = item.get("path")
+            action = str(item.get("action", "")).lower()
+            if isinstance(path, str) and path.strip() and action in ("create", "modify", "update"):
+                normalized = self._normalize_file_path(path)
+                if normalized:
+                    result.append(normalized)
+        return sorted(set(result))
+
+    def _extract_gap_file_refs(self, analysis_data: dict[str, Any]) -> list[str]:
+        gaps = analysis_data.get("gaps", [])
+        if not isinstance(gaps, list):
+            return []
+
+        refs: set[str] = set()
+        pattern = re.compile(r"([\w./\\-]+\.(?:ts|tsx|js|jsx|py|json|md))", re.IGNORECASE)
+        for gap in gaps:
+            if not isinstance(gap, str):
+                continue
+            for m in pattern.findall(gap):
+                normalized = self._normalize_file_path(m)
+                if normalized:
+                    refs.add(normalized)
+        return sorted(refs)
+
+    def _normalize_file_path(self, path: str) -> str:
+        cleaned = path.replace("\\", "/").strip()
+        if not cleaned:
+            return ""
+
+        project_root = self._context.project.project_root.replace("\\", "/") if self._context else ""
+        if project_root and cleaned.startswith(project_root):
+            cleaned = cleaned[len(project_root):].lstrip("/")
+
+        # 兼容绝对路径和盘符路径
+        if ":/" in cleaned:
+            cleaned = cleaned.split(":/", 1)[1]
+        cleaned = cleaned.lstrip("/")
+
+        return cleaned
 
     def run_until(self, task_count: int) -> None:
         """执行指定数量的任务后停止（用于测试）
