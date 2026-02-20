@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -13,7 +14,7 @@ from agent_system.agents.coder import CoderToolExecutor
 from agent_system.models.context import AgentConfig, AgentContext
 from agent_system.models.project_config import PatternMapping, ProjectConfig
 from agent_system.models.task import Task
-from agent_system.tools.read_file import read_file_tool
+from agent_system.tools.read_file import read_file_tool, read_files_tool
 from agent_system.tools.search_file import search_file_tool
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -39,6 +40,19 @@ class TestReadFileTool:
         """读取不存在的文件 → FileNotFoundError"""
         with pytest.raises(FileNotFoundError):
             read_file_tool("/nonexistent/file.lua")
+
+    def test_batch_read_files(self) -> None:
+        """批量读取多个文件（requests 模式）"""
+        result = read_files_tool(requests=[
+            {"path": str(FIXTURES / "sample.lua"), "start": 1, "end": 3},
+            {"path": str(FIXTURES / "valid_project.json")},
+        ])
+        data = json.loads(result)
+
+        assert "files" in data
+        assert len(data["files"]) == 2
+        assert "content" in data["files"][0]
+        assert "content" in data["files"][1]
 
 
 class TestSearchFileTool:

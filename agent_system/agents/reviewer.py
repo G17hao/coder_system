@@ -201,8 +201,15 @@ class Reviewer(BaseAgent):
                     return output
 
                 elif name == "read_file":
-                    from agent_system.tools.read_file import read_file_tool
+                    from agent_system.tools.read_file import read_file_tool, read_files_tool
                     try:
+                        if "requests" in tool_input or "paths" in tool_input:
+                            return read_files_tool(
+                                requests=tool_input.get("requests"),
+                                paths=tool_input.get("paths"),
+                                start=tool_input.get("start", 1),
+                                end=tool_input.get("end"),
+                            )
                         return read_file_tool(
                             path=tool_input["path"],
                             start=tool_input.get("start", 1),
