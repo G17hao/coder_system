@@ -45,6 +45,7 @@
   - 例如：`assets/scripts/net/NetModelBridge.ts` → `tests/net/NetModelBridge.test.ts`
 - 使用 `import { describe, it, expect, vi, beforeEach } from 'vitest'` 编写测试
 - Cocos Creator 的 `cc` 模块已被 mock（`tests/__mocks__/cc.ts`），`import { EventTarget, Node, Component, ... } from 'cc'` 可直接使用
+- **测试代码同样禁止 `any` 类型** — Mock 对象、回调参数、桩数据都必须定义明确的接口或类型，不得使用 `any` / `as any` 偷懒
 - 测试重点：
   - 公共方法的输入输出正确性
   - 事件的触发与回调参数
