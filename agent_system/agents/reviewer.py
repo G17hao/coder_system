@@ -11,6 +11,7 @@ from agent_system.agents.base import BaseAgent
 from agent_system.models.context import AgentContext
 from agent_system.models.task import Task, ReviewResult
 from agent_system.agents.coder import CodeChanges
+from agent_system.services.path_guard import PathGuard
 from agent_system.tools.run_command import (
     run_command_tool,
     send_stdin_tool,
@@ -101,6 +102,10 @@ class Reviewer(BaseAgent):
             ReviewResult
         """
         system_prompt = self.build_system_prompt(context.project)
+        guard = PathGuard(
+            allowed_roots=[context.project.project_root] + list(context.project.reference_roots),
+            default_base_dir=context.project.project_root,
+        )
 
         # 构建用于审查的代码摘要和变更文件列表
         code_summary = ""
@@ -109,11 +114,11 @@ class Reviewer(BaseAgent):
             file_paths = [f.path for f in code_changes.files]
             changed_files_list = "\n".join(f"  - `{p}` ({f.action})" for p, f in zip(file_paths, code_changes.files))
             for f in code_changes.files:
-                resolved = Path(f.path)
-                if not resolved.is_absolute():
-                    resolved = Path(context.project.project_root) / f.path
+                resolved = guard.resolve_path(f.path)
                 content_preview = ""
-                if resolved.exists():
+                if not guard.is_allowed(resolved):
+                    content_preview = f"[路径约束] 文件路径不在允许范围: {resolved}"
+                elif resolved.exists():
                     try:
                         file_content = resolved.read_text(encoding="utf-8", errors="replace")
                         content_preview = file_content[:2000]
@@ -183,6 +188,9 @@ class Reviewer(BaseAgent):
         ]
 
         class ReviewToolExecutor:
+            def __init__(self, path_guard: PathGuard) -> None:
+                self._guard = path_guard
+
             def execute(self, name: str, tool_input: dict[str, Any]) -> str:
                 if name == "run_command":
                     result = run_command_tool(
@@ -220,6 +228,30 @@ class Reviewer(BaseAgent):
                 elif name == "read_file":
                     from agent_system.tools.read_file import read_file_tool, read_files_tool
                     try:
+                        if "requests" in tool_input:
+                            for req in tool_input.get("requests", []):
+                                req_path = req.get("path")
+                                if isinstance(req_path, str):
+                                    normalized, err = self._guard.validate_file(req_path)
+                                    if err:
+                                        return f"错误: {err}"
+                                    req["path"] = normalized
+                        elif "paths" in tool_input:
+                            normalized_paths: list[str] = []
+                            for req_path in tool_input.get("paths", []):
+                                if not isinstance(req_path, str):
+                                    continue
+                                normalized, err = self._guard.validate_file(req_path)
+                                if err:
+                                    return f"错误: {err}"
+                                normalized_paths.append(normalized)
+                            tool_input["paths"] = normalized_paths
+                        elif "path" in tool_input:
+                            normalized, err = self._guard.validate_file(tool_input["path"])
+                            if err:
+                                return f"错误: {err}"
+                            tool_input["path"] = normalized
+
                         if "requests" in tool_input or "paths" in tool_input:
                             return read_files_tool(
                                 requests=tool_input.get("requests"),
@@ -237,18 +269,21 @@ class Reviewer(BaseAgent):
 
                 elif name == "grep_content":
                     from agent_system.tools.grep_content import grep_content_tool, grep_dir_tool
-                    from pathlib import Path
-                    target = Path(tool_input["path"])
+                    target = self._guard.resolve_path(str(tool_input["path"]))
+                    if not self._guard.is_allowed(target):
+                        if self._guard.default_base is None:
+                            return json.dumps([{"line": 0, "content": f"[路径约束] 路径不在允许范围: {target}"}], ensure_ascii=False)
+                        target = self._guard.default_base
                     if target.is_dir():
                         results = grep_dir_tool(
-                            base_dir=tool_input["path"],
+                            base_dir=str(target),
                             pattern=tool_input["pattern"],
                             file_pattern=tool_input.get("file_pattern", "*.ts"),
                             max_matches=tool_input.get("max_matches", 50),
                         )
                     else:
                         results = grep_content_tool(
-                            path=tool_input["path"],
+                            path=str(target),
                             pattern=tool_input["pattern"],
                             max_matches=tool_input.get("max_matches", 50),
                         )
@@ -256,9 +291,15 @@ class Reviewer(BaseAgent):
 
                 elif name == "diff_file":
                     from agent_system.tools.diff_file import diff_file_tool
+                    file_a, err_a = self._guard.validate_file(str(tool_input["file_a"]))
+                    if err_a or file_a is None:
+                        return f"错误: {err_a or 'file_a 路径无效'}"
+                    file_b, err_b = self._guard.validate_file(str(tool_input["file_b"]))
+                    if err_b or file_b is None:
+                        return f"错误: {err_b or 'file_b 路径无效'}"
                     return diff_file_tool(
-                        file_a=tool_input["file_a"],
-                        file_b=tool_input["file_b"],
+                        file_a=file_a,
+                        file_b=file_b,
                         context_lines=tool_input.get("context_lines", 3),
                     )
 
@@ -277,7 +318,7 @@ class Reviewer(BaseAgent):
             system_prompt=system_prompt,
             messages=[{"role": "user", "content": user_message}],
             tools=tools,
-            tool_executor=ReviewToolExecutor(),
+            tool_executor=ReviewToolExecutor(path_guard=guard),
             max_iterations=30,
             soft_limit=10,
             conversation_log=self._active_conversation_log,

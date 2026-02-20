@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any
 
 from agent_system.agents.base import BaseAgent
 from agent_system.models.context import AgentContext
 from agent_system.models.task import Task
+from agent_system.services.path_guard import PathGuard
 from agent_system.tools.read_file import READ_FILE_TOOL_DEFINITION
 from agent_system.tools.search_file import SEARCH_FILE_TOOL_DEFINITION
 from agent_system.tools.write_file import WRITE_FILE_TOOL_DEFINITION
@@ -79,11 +81,16 @@ class CoderToolExecutor:
     用于生成可靠的 CodeChanges，不依赖 LLM 最终 JSON 输出。
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        allowed_roots: list[str] | None = None,
+        default_base_dir: str | None = None,
+    ) -> None:
         # path → {"content": str, "action": "create"|"modify"}
         self._tracked_writes: dict[str, dict[str, str]] = {}
         # TODO 列表状态（跨工具调用持久）
         self._todo_items: list[dict[str, Any]] = []
+        self._guard = PathGuard(allowed_roots=allowed_roots, default_base_dir=default_base_dir)
 
     @property
     def tracked_changes(self) -> list[dict[str, str]]:
@@ -103,6 +110,30 @@ class CoderToolExecutor:
         """分发工具调用到具体实现"""
         if name == "read_file":
             from agent_system.tools.read_file import read_file_tool, read_files_tool
+            if "requests" in tool_input:
+                for req in tool_input.get("requests", []):
+                    req_path = req.get("path")
+                    if isinstance(req_path, str):
+                        normalized, err = self._guard.validate_file(req_path)
+                        if err:
+                            return f"错误: {err}"
+                        req["path"] = normalized
+            elif "paths" in tool_input:
+                normalized_paths: list[str] = []
+                for req_path in tool_input.get("paths", []):
+                    if not isinstance(req_path, str):
+                        continue
+                    normalized, err = self._guard.validate_file(req_path)
+                    if err:
+                        return f"错误: {err}"
+                    normalized_paths.append(normalized)
+                tool_input["paths"] = normalized_paths
+            elif "path" in tool_input:
+                normalized, err = self._guard.validate_file(tool_input["path"])
+                if err:
+                    return f"错误: {err}"
+                tool_input["path"] = normalized
+
             if "requests" in tool_input or "paths" in tool_input:
                 return read_files_tool(
                     requests=tool_input.get("requests"),
@@ -118,33 +149,40 @@ class CoderToolExecutor:
 
         elif name == "search_file":
             from agent_system.tools.search_file import search_file_tool
+            base_dir, warning = self._guard.clamp_dir(str(tool_input["base_dir"]))
             patterns = tool_input.get("patterns")
             if patterns:
                 # 多模式批量搜索
                 combined: dict[str, list[str]] = {}
                 for pat in patterns:
                     results = search_file_tool(
-                        base_dir=tool_input["base_dir"],
+                        base_dir=base_dir,
                         pattern=pat,
                         regex=tool_input.get("regex"),
                         max_results=tool_input.get("max_results", 200),
                         respect_gitignore=tool_input.get("respect_gitignore", True),
                     )
                     combined[pat] = results
+                if warning:
+                    return json.dumps({"warning": warning, "results": combined}, ensure_ascii=False)
                 return json.dumps(combined, ensure_ascii=False)
             else:
                 results = search_file_tool(
-                    base_dir=tool_input["base_dir"],
+                    base_dir=base_dir,
                     pattern=tool_input.get("pattern", "*"),
                     regex=tool_input.get("regex"),
                     max_results=tool_input.get("max_results", 200),
                     respect_gitignore=tool_input.get("respect_gitignore", True),
                 )
+                if warning:
+                    return json.dumps({"warning": warning, "results": results}, ensure_ascii=False)
                 return json.dumps(results, ensure_ascii=False)
 
         elif name == "write_file":
             from agent_system.tools.write_file import write_file_tool
-            file_path = tool_input["path"]
+            file_path, err = self._guard.validate_file(str(tool_input["path"]))
+            if err or file_path is None:
+                return f"错误: {err or '路径无效'}"
             content = tool_input["content"]
             result = write_file_tool(path=file_path, content=content)
             # 跟踪写入：如果路径已有记录视为 modify，否则判断文件是否预先存在
@@ -154,18 +192,22 @@ class CoderToolExecutor:
 
         elif name == "grep_content":
             from agent_system.tools.grep_content import grep_content_tool, grep_dir_tool
-            from pathlib import Path
-            target = Path(tool_input["path"])
+            raw_path = str(tool_input["path"])
+            target = self._guard.resolve_path(raw_path)
+            if not self._guard.is_allowed(target):
+                if self._guard.default_base is None:
+                    return json.dumps([{"line": 0, "content": f"[路径约束] 路径不在允许范围: {target}"}], ensure_ascii=False)
+                target = self._guard.default_base
             if target.is_dir():
                 results = grep_dir_tool(
-                    base_dir=tool_input["path"],
+                    base_dir=str(target),
                     pattern=tool_input["pattern"],
                     file_pattern=tool_input.get("file_pattern", "*.ts"),
                     max_matches=tool_input.get("max_matches", 50),
                 )
             else:
                 results = grep_content_tool(
-                    path=tool_input["path"],
+                    path=str(target),
                     pattern=tool_input["pattern"],
                     max_matches=tool_input.get("max_matches", 50),
                 )
@@ -173,24 +215,29 @@ class CoderToolExecutor:
 
         elif name == "list_directory":
             from agent_system.tools.list_directory import list_directory_tool
-            return list_directory_tool(
-                path=tool_input["path"],
+            path, warning = self._guard.clamp_dir(str(tool_input["path"]))
+            result = list_directory_tool(
+                path=path,
                 max_depth=tool_input.get("max_depth", 3),
                 include_files=tool_input.get("include_files", True),
                 max_entries=tool_input.get("max_entries", 500),
                 respect_gitignore=tool_input.get("respect_gitignore", True),
             )
+            if warning:
+                return f"{warning}\n{result}"
+            return result
 
         elif name == "replace_in_file":
             from agent_system.tools.replace_in_file import replace_in_file_tool
-            file_path = tool_input["path"]
+            file_path, err = self._guard.validate_file(str(tool_input["path"]))
+            if err or file_path is None:
+                return f"错误: {err or '路径无效'}"
             result = replace_in_file_tool(
                 path=file_path,
                 old_text=tool_input["old_text"],
                 new_text=tool_input["new_text"],
             )
             # replace 后重新读取文件完整内容以跟踪
-            from pathlib import Path
             updated_content = Path(file_path).read_text(encoding="utf-8")
             self._tracked_writes[file_path] = {"content": updated_content, "action": "modify"}
             return result
@@ -244,7 +291,11 @@ class Coder(BaseAgent):
             LIST_DIRECTORY_TOOL_DEFINITION,
             REPLACE_IN_FILE_TOOL_DEFINITION,
         ]
-        tool_executor = CoderToolExecutor()
+        allowed_roots = [context.project.project_root] + list(context.project.reference_roots)
+        tool_executor = CoderToolExecutor(
+            allowed_roots=allowed_roots,
+            default_base_dir=context.project.project_root,
+        )
 
         response = self._llm.call_with_tools_loop(
             system_prompt=system_prompt,
