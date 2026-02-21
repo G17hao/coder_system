@@ -243,7 +243,7 @@ class Analyst(BaseAgent):
                 "输出分析报告时必须设置 subtasks 为 []。"
             )
         else:
-            subtask_policy = "当前任务可按需拆解 subtasks；仅在确有必要时输出，避免过度拆分。"
+            subtask_policy = "若任务较复杂无法一次完成，可按需拆解为多个子任务到subtasks"
 
         return self._render_template(template, {
             "projectDescription": context.project.project_description,
