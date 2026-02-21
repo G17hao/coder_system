@@ -11,6 +11,13 @@ from agent_system import __version__
 from agent_system.services.logging_formatter import ExecutorColorFormatter
 
 
+def _run_task_wizard() -> int:
+    """运行无参数启动的任务列表对话助手"""
+    from agent_system.task_wizard import run_task_wizard
+
+    return run_task_wizard()
+
+
 def build_parser() -> argparse.ArgumentParser:
     """构建命令行参数解析器"""
     parser = argparse.ArgumentParser(
@@ -99,8 +106,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     """CLI 入口函数"""
+    effective_argv = list(sys.argv[1:] if argv is None else argv)
+
+    # 独立模式：无参数时进入任务列表对话系统
+    if not effective_argv:
+        return _run_task_wizard()
+
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(effective_argv)
 
     # 配置日志
     log_level = logging.DEBUG if args.verbose else logging.INFO
