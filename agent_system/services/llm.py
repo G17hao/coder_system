@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import socket
 import sys
 import time
 from dataclasses import dataclass, field
@@ -56,6 +57,14 @@ def _strip_think_tags(text: str | None) -> str:
     return text.strip()
 
 
+def _is_retryable_timeout_error(error: Exception) -> bool:
+    """判断是否为可重试的底层超时异常"""
+    if isinstance(error, (TimeoutError, socket.timeout)):
+        return True
+    message = str(error).lower()
+    return "timed out" in message or "timeout" in message
+
+
 class LLMService:
     """Anthropic Claude API 封装"""
 
@@ -82,6 +91,7 @@ class LLMService:
         self._temperature = temperature
         self._usage = TokenUsage()
         self._timeout = timeout
+        # 保留该字段仅用于兼容历史配置；_call_with_retry 已采用无限重试策略。
         self._max_retries = max_retries
 
     @property
@@ -174,18 +184,18 @@ class LLMService:
             Anthropic API 响应对象 (Message)
 
         Raises:
-            anthropic.APITimeoutError: 所有重试均超时
             anthropic.APIError: 不可重试的 API 错误
         """
-        last_error: Exception | None = None
-        max_attempts = self._max_retries + 1
         tag = f"[{label}]" if label else "[LLM]"
+        attempt = 1
+        retry_wait_seconds = 10
+        max_retry_wait_seconds = 120
 
-        for attempt in range(1, max_attempts + 1):
+        while True:
             try:
                 start = time.time()
                 if attempt > 1:
-                    logger.info(f"    {tag} 重试 ({attempt}/{max_attempts})...")
+                    logger.info(f"    {tag} 重试 (第 {attempt} 次)...")
 
                 # 显示等待提示
                 sys.stdout.write(f"\n    {tag} ⏳ 等待响应...")
@@ -221,42 +231,50 @@ class LLMService:
 
             except anthropic.APITimeoutError as e:
                 elapsed = time.time() - start
-                last_error = e
-                logger.warning(f"    {tag} 超时 ({elapsed:.0f}s) [{attempt}/{max_attempts}]")
-                if attempt < max_attempts:
-                    wait = min(10 * attempt, 30)
-                    time.sleep(wait)
+                logger.warning(f"    {tag} 超时 ({elapsed:.0f}s) [第 {attempt} 次]")
+                logger.warning(f"    {tag} {retry_wait_seconds}s 后重试（退避上限 {max_retry_wait_seconds}s）")
+                time.sleep(retry_wait_seconds)
+                retry_wait_seconds = min(retry_wait_seconds * 2, max_retry_wait_seconds)
+                attempt += 1
+                continue
 
             except anthropic.APIConnectionError as e:
-                elapsed = time.time() - start
-                last_error = e
-                logger.warning(f"    {tag} 连接错误 [{attempt}/{max_attempts}]: {e}")
-                if attempt < max_attempts:
-                    wait = min(10 * attempt, 30)
-                    time.sleep(wait)
+                logger.warning(f"    {tag} 连接错误 [第 {attempt} 次]: {e}")
+                logger.warning(f"    {tag} {retry_wait_seconds}s 后重试（退避上限 {max_retry_wait_seconds}s）")
+                time.sleep(retry_wait_seconds)
+                retry_wait_seconds = min(retry_wait_seconds * 2, max_retry_wait_seconds)
+                attempt += 1
+                continue
 
             except anthropic.RateLimitError as e:
-                elapsed = time.time() - start
-                last_error = e
-                logger.warning(f"    {tag} 速率限制 [{attempt}/{max_attempts}]")
-                if attempt < max_attempts:
-                    wait = min(30 * attempt, 60)
-                    time.sleep(wait)
+                logger.warning(f"    {tag} 速率限制 [第 {attempt} 次]: {e}")
+                logger.warning(f"    {tag} {retry_wait_seconds}s 后重试（退避上限 {max_retry_wait_seconds}s）")
+                time.sleep(retry_wait_seconds)
+                retry_wait_seconds = min(retry_wait_seconds * 2, max_retry_wait_seconds)
+                attempt += 1
+                continue
 
             except anthropic.APIStatusError as e:
                 # 5xx 服务端错误可重试，4xx 直接抛出
                 if e.status_code >= 500:
-                    last_error = e
-                    logger.warning(f"    {tag} 服务端 {e.status_code} [{attempt}/{max_attempts}]")
-                    if attempt < max_attempts:
-                        wait = min(20 * attempt, 60)
-                        time.sleep(wait)
+                    logger.warning(f"    {tag} 服务端 {e.status_code} [第 {attempt} 次]")
+                    logger.warning(f"    {tag} {retry_wait_seconds}s 后重试（退避上限 {max_retry_wait_seconds}s）")
+                    time.sleep(retry_wait_seconds)
+                    retry_wait_seconds = min(retry_wait_seconds * 2, max_retry_wait_seconds)
+                    attempt += 1
+                    continue
                 else:
                     raise
 
-        assert last_error is not None
-        logger.error(f"    {tag} 所有 {max_attempts} 次尝试均失败: {last_error}")
-        raise last_error
+            except Exception as e:
+                if _is_retryable_timeout_error(e):
+                    logger.warning(f"    {tag} 底层超时 [第 {attempt} 次]: {e}")
+                    logger.warning(f"    {tag} {retry_wait_seconds}s 后重试（退避上限 {max_retry_wait_seconds}s）")
+                    time.sleep(retry_wait_seconds)
+                    retry_wait_seconds = min(retry_wait_seconds * 2, max_retry_wait_seconds)
+                    attempt += 1
+                    continue
+                raise
 
     def call_with_tools_loop(
         self,
