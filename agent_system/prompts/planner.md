@@ -14,6 +14,10 @@
 
 {{taskCategories}}
 
+## 项目特定规划约束
+
+{{projectSpecificPrompt}}
+
 ## 规划原则
 
 1. **依赖优先**：底层基础设施（Model、网络协议）必须先于上层 UI 组件

@@ -14,9 +14,9 @@
 
 {{patternMappings}}
 
-## 审查通过标准（必须满足）
+## 审查通过标准
 
-以下条目由 Reviewer 严格执行；你产出的代码必须主动满足：
+以下条目由 Reviewer 严格执行；你产出的代码应主动满足：
 
 ### 审查检查项
 
@@ -31,6 +31,10 @@
 以下任务已经完成，其产出的类型/接口/模块可直接 import 使用，**不要重复定义**：
 
 {{completedTasks}}
+
+## 项目特定实现约束
+
+{{projectSpecificPrompt}}
 
 ## 代码生成策略
 
@@ -51,21 +55,9 @@
 - 错误处理：网络回调中必须有 try-catch，日志中标明来源模块
 
 ### 单元测试
-- **每个新增的业务类/服务类必须有对应的 vitest 测试文件**
-- 测试文件放在 `tests/` 目录下，镜像 `assets/scripts/` 的目录结构
-  - 例如：`assets/scripts/model/PlayerModel.ts` → `tests/model/PlayerModel.test.ts`
-  - 例如：`assets/scripts/net/NetModelBridge.ts` → `tests/net/NetModelBridge.test.ts`
-- 使用 `import { describe, it, expect, vi, beforeEach } from 'vitest'` 编写测试
-- Cocos Creator 的 `cc` 模块已被 mock（`tests/__mocks__/cc.ts`），`import { EventTarget, Node, Component, ... } from 'cc'` 可直接使用
-- **测试代码同样禁止 `any` 类型** — Mock 对象、回调参数、桩数据都必须定义明确的接口或类型，不得使用 `any` / `as any` 偷懒
-- 测试重点：
-  - 公共方法的输入输出正确性
-  - 事件的触发与回调参数
-  - 边界条件（空数据、重复调用、异常输入）
-  - 单例的初始化与重置
-- **不要测试** Cocos 引擎内部行为（渲染、物理等），只测试纯逻辑
-- 如果 cc mock 中缺少某个类型，可以在测试文件中局部 mock，不要修改 `tests/__mocks__/cc.ts`
-- 每个测试文件至少包含 3 个测试用例
+- 若项目配置要求补充测试，优先给新增业务逻辑提供对应测试
+- 测试策略、目录约定、框架用法以“项目特定实现约束”为准
+- 测试代码同样遵循禁止 `any` 等核心规范
 
 ### 重试修复
 如果这次是重试（上次审查未通过），务必：
@@ -91,6 +83,6 @@
 ## 注意事项
 
 - 确保生成的代码可以通过 TypeScript 编译检查
-- 确保生成的测试可以通过 `npx vitest run` 执行且全部通过
+- 确保审查命令中声明的构建/测试命令可通过
 - 严格遵循上述编码规范
 - 如果分析报告中有 `dependencies` 字段，确保相应的 import 存在

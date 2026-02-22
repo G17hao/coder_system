@@ -86,6 +86,7 @@ class ProjectConfig:
     pattern_mappings: list[PatternMapping] = field(default_factory=list)
     review_checklist: list[str] = field(default_factory=list)
     review_commands: list[str] = field(default_factory=list)
+    prompt_overrides: dict[str, str] = field(default_factory=dict)
     task_categories: list[str] = field(default_factory=list)
     initial_tasks: list[TaskSeed] = field(default_factory=list)
 
@@ -100,6 +101,7 @@ class ProjectConfig:
             "pattern_mappings": [m.to_dict() for m in self.pattern_mappings],
             "review_checklist": self.review_checklist,
             "review_commands": self.review_commands,
+            "prompt_overrides": self.prompt_overrides,
             "task_categories": self.task_categories,
             "initial_tasks": [t.to_dict() for t in self.initial_tasks],
         }
@@ -124,6 +126,7 @@ class ProjectConfig:
             ],
             review_checklist=data.get("review_checklist", []),
             review_commands=data.get("review_commands", []),
+            prompt_overrides=data.get("prompt_overrides", {}),
             task_categories=data.get("task_categories", []),
             initial_tasks=[
                 TaskSeed.from_dict(t) for t in data.get("initial_tasks", [])

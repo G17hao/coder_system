@@ -426,6 +426,8 @@ class Coder(BaseAgent):
 
         # 格式化已完成任务上下文
         completed_text = self._format_completed_tasks(context)
+        prompt_overrides = getattr(project, "prompt_overrides", {}) or {}
+        project_specific_prompt = str(prompt_overrides.get("coder", "")).strip()
 
         return self._render_template(template, {
             "codingConventions": conventions,
@@ -433,6 +435,7 @@ class Coder(BaseAgent):
             "reviewChecklist": checklist_text or "无",
             "reviewCommands": commands_text or "无",
             "completedTasks": completed_text or "无（首个任务）",
+            "projectSpecificPrompt": project_specific_prompt or "无",
         })
 
     @staticmethod

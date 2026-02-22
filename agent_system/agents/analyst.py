@@ -236,6 +236,8 @@ class Analyst(BaseAgent):
         completed_text = self._format_completed_tasks(context)
 
         conventions = getattr(context.project, "coding_conventions", "")
+        prompt_overrides = getattr(context.project, "prompt_overrides", {}) or {}
+        project_specific_prompt = str(prompt_overrides.get("analyst", "")).strip()
 
         if task and task.created_by == "planner":
             subtask_policy = (
@@ -243,7 +245,7 @@ class Analyst(BaseAgent):
                 "输出分析报告时必须设置 subtasks 为 []。"
             )
         else:
-            subtask_policy = "若任务较复杂无法一次完成，可按需拆解为多个子任务到subtasks"
+            subtask_policy = "若任务较复杂无法一次完成，可按需拆解为多个子任务到subtasks；应控制好粒度避免过度拆分。"
 
         return self._render_template(template, {
             "projectDescription": context.project.project_description,
@@ -251,6 +253,7 @@ class Analyst(BaseAgent):
             "patternMappings": mappings_text or "无",
             "completedTasks": completed_text or "无（首个任务）",
             "subtaskPolicy": subtask_policy,
+            "projectSpecificPrompt": project_specific_prompt or "无",
         })
 
     @staticmethod

@@ -54,7 +54,13 @@ class Supervisor(BaseAgent):
         Returns:
             SupervisorDecision 决策结果
         """
-        system_prompt = self._load_prompt_template("supervisor.md")
+        template = self._load_prompt_template("supervisor.md")
+        prompt_overrides = getattr(context.project, "prompt_overrides", {}) or {}
+        project_specific_prompt = str(prompt_overrides.get("supervisor", "")).strip()
+        system_prompt = self._render_template(
+            template,
+            {"projectSpecificPrompt": project_specific_prompt or "无"},
+        )
         user_message = self._build_user_message(task, context)
 
         response = self._llm.call(

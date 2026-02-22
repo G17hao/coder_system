@@ -78,11 +78,14 @@ class Reviewer(BaseAgent):
             commands_text = json.dumps(project.review_commands, ensure_ascii=False)
 
         conventions = getattr(project, "coding_conventions", "")
+        prompt_overrides = getattr(project, "prompt_overrides", {}) or {}
+        project_specific_prompt = str(prompt_overrides.get("reviewer", "")).strip()
 
         return self._render_template(template, {
             "codingConventions": conventions or "无",
             "reviewChecklist": checklist_text or "无",
             "reviewCommands": commands_text or "无",
+            "projectSpecificPrompt": project_specific_prompt or "无",
         })
 
     def _llm_review(

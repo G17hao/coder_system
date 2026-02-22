@@ -189,9 +189,12 @@ class Planner(BaseAgent):
     def _build_system_prompt(self, context: AgentContext) -> str:
         """构建 Planner 的系统提示词"""
         template = self._load_prompt_template("planner.md")
+        prompt_overrides = getattr(context.project, "prompt_overrides", {}) or {}
+        project_specific_prompt = str(prompt_overrides.get("planner", "")).strip()
         return self._render_template(template, {
             "projectDescription": context.project.project_description,
             "taskCategories": json.dumps(context.project.task_categories, ensure_ascii=False),
+            "projectSpecificPrompt": project_specific_prompt or "无",
         })
 
     def _parse_generated_tasks(self, content: str, limit: int) -> list[Task]:
