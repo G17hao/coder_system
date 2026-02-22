@@ -3,12 +3,56 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
 
 from agent_system import __version__
 from agent_system.services.logging_formatter import ExecutorColorFormatter
+
+
+def _build_min_project_template() -> dict[str, object]:
+    """构建最小通用项目配置模板。"""
+    return {
+        "project_name": "my-project",
+        "project_description": "项目目标描述",
+        "project_root": "D:/path/to/target-project",
+        "reference_roots": [
+            "D:/path/to/reference-code",
+        ],
+        "git_branch": "feat/agent-auto",
+        "coding_conventions": "在此填写项目编码规范",
+        "pattern_mappings": [
+            {"from_pattern": "source pattern", "to_pattern": "target pattern"},
+        ],
+        "review_checklist": [
+            "关键检查项1",
+            "关键检查项2",
+        ],
+        "review_commands": [
+            "在此填写构建/测试命令",
+        ],
+        "prompt_overrides": {
+            "planner": "项目特定规划约束（可选）",
+            "analyst": "项目特定分析约束（可选）",
+            "coder": "项目特定实现约束（可选）",
+            "reviewer": "项目特定审查策略（可选）",
+            "supervisor": "项目特定监督约束（可选）",
+        },
+        "task_categories": ["infrastructure", "feature", "integration"],
+        "initial_tasks": [
+            {
+                "id": "T0.1",
+                "title": "初始化基础能力",
+                "description": "实现第一个可验证的基础任务",
+                "dependencies": [],
+                "priority": 0,
+                "phase": 0,
+                "category": "infrastructure",
+            }
+        ],
+    }
 
 
 def _run_task_wizard() -> int:
@@ -60,6 +104,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--status",
         action="store_true",
         help="查看任务队列状态",
+    )
+    parser.add_argument(
+        "--project-template",
+        action="store_true",
+        help="输出最小 project.json 模板（含 prompt_overrides 示例）",
     )
     parser.add_argument(
         "--api-key",
@@ -132,6 +181,10 @@ def main(argv: list[str] | None = None) -> int:
     # 即使 --verbose 也不需要看这些底层网络日志
     for noisy_logger in ("httpx", "httpcore", "anthropic", "urllib3"):
         logging.getLogger(noisy_logger).setLevel(logging.WARNING)
+
+    if args.project_template:
+        print(json.dumps(_build_min_project_template(), ensure_ascii=False, indent=2))
+        return 0
 
     if not args.project:
         if args.status:
