@@ -96,6 +96,8 @@ class TestCoderAgent:
             pattern_mappings=[
                 PatternMapping(from_pattern="View+Ctrl", to_pattern="Component+Service")
             ],
+            review_checklist=["无 any 类型", "通过 tsc 编译"],
+            review_commands=["npx tsc --noEmit", "npx vitest run"],
         )
 
     def test_system_prompt_injection(self) -> None:
@@ -106,6 +108,8 @@ class TestCoderAgent:
         prompt = coder.build_system_prompt(config)
         assert "禁止 any 类型" in prompt
         assert "View+Ctrl" in prompt
+        assert "无 any 类型" in prompt
+        assert "npx tsc --noEmit" in prompt
 
     def test_coder_integration(self) -> None:
         """Coder 集成测试（mock LLM 返回预定义文件内容）"""

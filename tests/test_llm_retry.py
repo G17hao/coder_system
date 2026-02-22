@@ -115,3 +115,22 @@ def test_read_operation_timeout_is_retried(monkeypatch) -> None:
 
     assert result is expected_response
     assert waits == [10, 20, 40]
+
+
+def test_estimate_request_payload_contains_size_metrics() -> None:
+    """请求体估算应返回排查超限所需关键指标"""
+    from agent_system.services.llm import _estimate_request_payload
+
+    payload = _estimate_request_payload(
+        system_prompt="system prompt",
+        messages=[
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "world"},
+        ],
+        tools=[{"name": "read_file", "input_schema": {"type": "object"}}],
+    )
+
+    assert payload["message_count"] == 2
+    assert payload["tool_count"] == 1
+    assert payload["message_chars"] >= 10
+    assert payload["payload_bytes"] > 0

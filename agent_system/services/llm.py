@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import socket
@@ -63,6 +64,78 @@ def _is_retryable_timeout_error(error: Exception) -> bool:
         return True
     message = str(error).lower()
     return "timed out" in message or "timeout" in message
+
+
+def _extract_api_status_error_detail(error: anthropic.APIStatusError) -> str:
+    """提取 APIStatusError 可读详情（request_id/响应体）"""
+    parts: list[str] = []
+
+    request_id = getattr(error, "request_id", None)
+    if request_id:
+        parts.append(f"request_id={request_id}")
+
+    body = getattr(error, "body", None)
+    if body:
+        parts.append(f"body={body}")
+
+    response = getattr(error, "response", None)
+    if response is not None:
+        headers = getattr(response, "headers", None)
+        if headers is not None:
+            header_request_id = headers.get("request-id") or headers.get("x-request-id")
+            if header_request_id and not request_id:
+                parts.append(f"request_id={header_request_id}")
+
+        response_text = getattr(response, "text", None)
+        if response_text:
+            parts.append(f"response={response_text}")
+        else:
+            try:
+                response_json = response.json()
+                parts.append(f"response={response_json}")
+            except Exception:
+                pass
+
+    if not parts:
+        parts.append(str(error))
+
+    detail = " | ".join(parts)
+    max_len = 800
+    if len(detail) > max_len:
+        return detail[:max_len] + "..."
+    return detail
+
+
+def _estimate_request_payload(
+    system_prompt: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+) -> dict[str, int]:
+    """估算请求体规模，用于排查请求过大问题"""
+    system_chars = len(system_prompt)
+    message_count = len(messages)
+    message_chars = sum(len(str(msg.get("content", ""))) for msg in messages)
+    tool_count = len(tools) if tools else 0
+    tool_schema_chars = len(json.dumps(tools or [], ensure_ascii=False))
+
+    payload_obj = {
+        "model": "",
+        "max_tokens": 0,
+        "temperature": 0,
+        "system": system_prompt,
+        "messages": messages,
+        "tools": tools or [],
+    }
+    payload_bytes = len(json.dumps(payload_obj, ensure_ascii=False).encode("utf-8"))
+
+    return {
+        "system_chars": system_chars,
+        "message_count": message_count,
+        "message_chars": message_chars,
+        "tool_count": tool_count,
+        "tool_schema_chars": tool_schema_chars,
+        "payload_bytes": payload_bytes,
+    }
 
 
 class LLMService:
@@ -128,6 +201,16 @@ class LLMService:
         if tools:
             kwargs["tools"] = tools
 
+        # 请求前日志：帮助定位请求体过大/参数异常问题
+        payload = _estimate_request_payload(system_prompt, messages, tools)
+        tag = f"[{label}]" if label else "[LLM]"
+        logger.info(
+            f"    {tag} 请求体 | msgs={payload['message_count']} | "
+            f"msg_chars={payload['message_chars']} | system_chars={payload['system_chars']} | "
+            f"tools={payload['tool_count']} | tool_chars={payload['tool_schema_chars']} | "
+            f"payload≈{payload['payload_bytes']}B"
+        )
+
         # 带重试的 API 调用
         response = self._call_with_retry(label=label, **kwargs)
 
@@ -167,6 +250,11 @@ class LLMService:
                 tool_calls=result.tool_calls or None,
             )
             conversation_log.add_token_usage(input_tokens, output_tokens)
+
+        logger.info(
+            f"    {tag} 用量 | +{input_tokens} in / +{output_tokens} out | "
+            f"累计 calls={self._usage.total_calls}, in={self._usage.total_input}, out={self._usage.total_output}"
+        )
 
         return result
 
@@ -258,6 +346,7 @@ class LLMService:
                 # 5xx 服务端错误可重试，4xx 直接抛出
                 if e.status_code >= 500:
                     logger.warning(f"    {tag} 服务端 {e.status_code} [第 {attempt} 次]")
+                    logger.warning(f"    {tag} 500详情: {_extract_api_status_error_detail(e)}")
                     logger.warning(f"    {tag} {retry_wait_seconds}s 后重试（退避上限 {max_retry_wait_seconds}s）")
                     time.sleep(retry_wait_seconds)
                     retry_wait_seconds = min(retry_wait_seconds * 2, max_retry_wait_seconds)

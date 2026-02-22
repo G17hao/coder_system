@@ -413,6 +413,15 @@ class Coder(BaseAgent):
             for m in project.pattern_mappings:
                 mappings_text += f"- {m.from_pattern} → {m.to_pattern}\n"
 
+        checklist_text = ""
+        if hasattr(project, "review_checklist"):
+            for i, item in enumerate(project.review_checklist, 1):
+                checklist_text += f"{i}. {item}\n"
+
+        commands_text = ""
+        if hasattr(project, "review_commands"):
+            commands_text = json.dumps(project.review_commands, ensure_ascii=False)
+
         conventions = getattr(project, "coding_conventions", "")
 
         # 格式化已完成任务上下文
@@ -421,6 +430,8 @@ class Coder(BaseAgent):
         return self._render_template(template, {
             "codingConventions": conventions,
             "patternMappings": mappings_text or "无",
+            "reviewChecklist": checklist_text or "无",
+            "reviewCommands": commands_text or "无",
             "completedTasks": completed_text or "无（首个任务）",
         })
 
