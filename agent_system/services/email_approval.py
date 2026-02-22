@@ -32,9 +32,9 @@ class EmailApprovalService:
     def __init__(self, config: EmailApprovalConfig) -> None:
         self._config = config
 
-    def request_and_wait(self, task: Task) -> EmailApprovalDecision:
+    def request_and_wait(self, task: Task, progress_summary: str = "") -> EmailApprovalDecision:
         subject, token = self._build_subject(task)
-        self._send_notification(task, subject, token)
+        self._send_notification(task, subject, token, progress_summary)
         return self._wait_for_reply(task, token)
 
     def _build_subject(self, task: Task) -> tuple[str, str]:
@@ -42,7 +42,7 @@ class EmailApprovalService:
         subject = f"{self._config.subject_prefix} Supervisor暂停 {task.id} [{token}]"
         return subject, token
 
-    def _send_notification(self, task: Task, subject: str, token: str) -> None:
+    def _send_notification(self, task: Task, subject: str, token: str, progress_summary: str = "") -> None:
         smtp_password = os.environ.get(self._config.smtp_password_env, "")
         if not smtp_password:
             raise RuntimeError(f"环境变量 {self._config.smtp_password_env} 未设置")
@@ -52,12 +52,15 @@ class EmailApprovalService:
         if not sender or not receiver:
             raise RuntimeError("email_approval.notify_from/notify_to 未完整配置")
 
+        summary_text = progress_summary.strip()
+
         body = (
             f"任务已被 Supervisor 暂停，需要人工决策。\n\n"
             f"任务ID: {task.id}\n"
             f"标题: {task.title}\n"
             f"状态: {task.status.value}\n"
             f"错误: {(task.error or '')[:1000]}\n\n"
+            f"当前进度:\n{summary_text or '（无可用统计）'}\n\n"
             f"请回复邮件并在正文第一行写：\n"
             f"- CONTINUE: <可选提示词>\n"
             f"- STOP\n\n"
@@ -89,10 +92,9 @@ class EmailApprovalService:
             client.select("INBOX")
 
             while time.time() < deadline:
-                status, data = client.search(None, "UNSEEN")
-                if status == "OK":
-                    msg_ids = data[0].split() if data and data[0] else []
-                    for msg_id in reversed(msg_ids):
+                msg_ids = self._search_candidate_ids(client, approval_sender)
+                if msg_ids:
+                    for msg_id in reversed(msg_ids[-50:]):
                         status_fetch, message_data = client.fetch(msg_id, "(RFC822)")
                         if status_fetch != "OK" or not message_data:
                             continue
@@ -107,6 +109,22 @@ class EmailApprovalService:
 
         logger.warning("  [email] 等待审批邮件超时（任务 %s）", task.id)
         return EmailApprovalDecision(action="stop")
+
+    def _search_candidate_ids(self, client: imaplib.IMAP4_SSL, approval_sender: str) -> list[bytes]:
+        if approval_sender:
+            status, data = client.search(None, "UNSEEN", "FROM", f'"{approval_sender}"')
+        else:
+            status, data = client.search(None, "UNSEEN")
+
+        unseen_ids = data[0].split() if status == "OK" and data and data[0] else []
+        if unseen_ids:
+            return unseen_ids
+
+        if approval_sender:
+            status_all, data_all = client.search(None, "FROM", f'"{approval_sender}"')
+            return data_all[0].split() if status_all == "OK" and data_all and data_all[0] else []
+
+        return []
 
     def _parse_message(
         self,

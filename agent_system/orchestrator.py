@@ -6,6 +6,7 @@ import logging
 import os
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,8 @@ from agent_system.services.state_store import StateStore
 logger = logging.getLogger(__name__)
 
 _RETRY_FUSE_THRESHOLD = 3
+_NO_READY_AUTO_RETRY_LIMIT = 20
+_NO_READY_SLEEP_SEC = 30
 
 
 class Orchestrator:
@@ -180,6 +183,7 @@ class Orchestrator:
 
         iteration = 0
         max_idle = 50  # 防止无限循环
+        no_ready_retry_rounds = 0
 
         while iteration < max_idle:
             iteration += 1
@@ -194,6 +198,7 @@ class Orchestrator:
                 )
                 self._save_state()
                 print("Token budget exceeded, pausing...")
+                print("[退出原因] Token 预算达到上限，暂停执行")
                 break
 
             # 检查 API 调用次数限制
@@ -203,6 +208,7 @@ class Orchestrator:
                 )
                 self._save_state()
                 print("API call limit exceeded, pausing...")
+                print("[退出原因] API 调用次数达到上限，暂停执行")
                 break
 
             # 获取下一个可执行任务
@@ -216,16 +222,48 @@ class Orchestrator:
                 ]
                 if not blocked:
                     logger.info("所有任务已完成或失败")
+                    print("[退出原因] 没有待执行任务（全部完成/失败/跳过）")
                     break
 
                 # 尝试解锁 blocked 任务
                 unlocked = self._try_unlock_blocked()
                 if not unlocked:
-                    logger.warning("存在 blocked 任务但无法解锁，退出")
+                    has_pending = any(t.status == TaskStatus.PENDING for t in blocked)
+                    if has_pending:
+                        no_ready_retry_rounds += 1
+                        effective_limit = 1 if self._config.dry_run else _NO_READY_AUTO_RETRY_LIMIT
+                        reason = (
+                            "存在等待任务，但当前无可执行任务（依赖未满足）"
+                        )
+                        logger.warning(reason)
+                        summary = self._summarize_unready_pending(limit=8)
+                        if no_ready_retry_rounds <= effective_limit:
+                            print(
+                                f"[自动恢复] {reason}，将自动重试 "
+                                f"({no_ready_retry_rounds}/{effective_limit})"
+                            )
+                            if summary:
+                                print(summary)
+                            sleep_sec = 0 if self._config.dry_run else _NO_READY_SLEEP_SEC
+                            if sleep_sec > 0:
+                                time.sleep(sleep_sec)
+                            continue
+
+                        print(f"[退出原因] {reason}，自动重试次数已用尽")
+                        if summary:
+                            print(summary)
+                        break
+
+                    reason = "存在 blocked 任务但无法解锁"
+                    logger.warning(reason)
+                    print(f"[退出原因] {reason}")
                     break
+
+                no_ready_retry_rounds = 0
                 continue
 
             # 执行单个任务
+            no_ready_retry_rounds = 0
             self.run_single_task(task)
             self._save_state()
 
@@ -234,8 +272,12 @@ class Orchestrator:
                 should_continue = self._handle_paused_task(task)
                 if not should_continue:
                     logger.info("用户选择停止，退出主循环")
+                    print(f"[退出原因] 人工介入后停止（任务 {task.id}）")
                     break
                 self._save_state()
+
+        if iteration >= max_idle:
+            print(f"[退出原因] 达到最大空转轮次限制 ({max_idle})")
 
         # 输出最终报告
         self._print_report()
@@ -866,9 +908,14 @@ class Orchestrator:
 
         try:
             logger.info("  [email] Supervisor 暂停，发送邮件审批并等待回复...")
-            decision: EmailApprovalDecision = self._email_approval.request_and_wait(task)
+            progress_summary = self._build_task_progress_summary()
+            decision: EmailApprovalDecision = self._email_approval.request_and_wait(
+                task,
+                progress_summary=progress_summary,
+            )
         except Exception as e:
             logger.warning(f"  [email] 邮件审批流程失败，回退终端交互: {e}")
+            print(f"[邮件审批] 处理失败：{e}，已回退终端输入")
             return None
 
         if decision.action == "continue":
@@ -881,10 +928,36 @@ class Orchestrator:
             logger.info(
                 f"  [email] 收到继续指令，任务 {task.id} 重置为 PENDING，提示: {hint[:120]}"
             )
+            print(f"[邮件审批] 已收到继续指令，任务 {task.id} 恢复执行（成功）")
             return True
 
         logger.info(f"  [email] 收到停止指令或超时，任务 {task.id} 维持暂停")
+        print(f"[邮件审批] 未继续执行，任务 {task.id} 保持暂停（失败/停止/超时）")
         return False
+
+    def _build_task_progress_summary(self) -> str:
+        if self._context is None:
+            return ""
+
+        tasks = self._context.task_queue
+        total = len(tasks)
+        done = sum(1 for t in tasks if t.status == TaskStatus.DONE)
+        pending = sum(1 for t in tasks if t.status == TaskStatus.PENDING)
+        in_progress = sum(1 for t in tasks if t.status == TaskStatus.IN_PROGRESS)
+        blocked = sum(1 for t in tasks if t.status == TaskStatus.BLOCKED)
+        failed = sum(1 for t in tasks if t.status == TaskStatus.FAILED)
+        skipped = sum(1 for t in tasks if t.status == TaskStatus.SKIPPED)
+        percent = (done / total * 100) if total > 0 else 0.0
+
+        return (
+            f"总任务: {total}\n"
+            f"已完成: {done} ({percent:.1f}%)\n"
+            f"待处理: {pending}\n"
+            f"进行中: {in_progress}\n"
+            f"阻塞: {blocked}\n"
+            f"失败: {failed}\n"
+            f"跳过: {skipped}"
+        )
 
     def _sync_llm_usage(self) -> None:
         """将 LLMService 的累计 usage 同步到 AgentContext"""
@@ -1131,6 +1204,59 @@ class Orchestrator:
                         unlocked = True
 
         return unlocked
+
+    def _summarize_unready_pending(self, limit: int = 8) -> str:
+        if self._context is None or self._planner is None:
+            return ""
+
+        pending = [
+            task for task in self._context.task_queue
+            if task.status == TaskStatus.PENDING
+        ]
+        if not pending:
+            return ""
+
+        all_ids = {task.id for task in self._context.task_queue}
+        completed_ids = {
+            task_id for task_id, task in self._context.completed_tasks.items()
+            if task.status == TaskStatus.DONE
+        }
+
+        lines: list[str] = ["[依赖摘要] 以下等待任务依赖未满足:"]
+        count = 0
+        for task in sorted(pending, key=lambda x: (x.priority, x.phase, x.id)):
+            dep_status = self._planner.check_dependencies(
+                task,
+                self._context.completed_tasks,
+                context=self._context,
+            )
+            if dep_status == DependencyStatus.READY:
+                continue
+
+            missing: list[str] = []
+            unmet: list[str] = []
+            for dep_id in task.dependencies:
+                if dep_id in completed_ids:
+                    continue
+                if dep_id not in all_ids:
+                    missing.append(dep_id)
+                else:
+                    unmet.append(dep_id)
+
+            detail_parts: list[str] = []
+            if unmet:
+                detail_parts.append(f"前置未完成: {', '.join(unmet)}")
+            if missing:
+                detail_parts.append(f"前置缺失: {', '.join(missing)}")
+            if not detail_parts:
+                detail_parts.append("依赖状态非 READY")
+
+            lines.append(f"- {task.id}: {'; '.join(detail_parts)}")
+            count += 1
+            if count >= limit:
+                break
+
+        return "\n".join(lines) if count > 0 else ""
 
     def _print_report(self) -> None:
         """输出执行报告"""

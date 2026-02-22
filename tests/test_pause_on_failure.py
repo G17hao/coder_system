@@ -10,6 +10,7 @@ import pytest
 from agent_system.models.context import AgentConfig, AgentContext
 from agent_system.models.project_config import EmailApprovalConfig, ProjectConfig
 from agent_system.models.task import Task, TaskStatus
+from agent_system.agents.planner import DependencyStatus
 from agent_system.orchestrator import Orchestrator
 from agent_system.services.email_approval import EmailApprovalDecision
 
@@ -303,6 +304,10 @@ class TestEmailApprovalOnBlocked:
         assert task.retry_count == 0
         assert task.error is None
         assert task.supervisor_hint == "请优先修复类型不匹配"
+        assert mock_email.request_and_wait.call_count == 1
+        _, kwargs = mock_email.request_and_wait.call_args
+        assert "progress_summary" in kwargs
+        assert "总任务" in kwargs["progress_summary"]
 
     def test_blocked_stop_by_email(self) -> None:
         """邮件回复 STOP 时，任务保持阻塞并停止主循环"""
@@ -321,3 +326,56 @@ class TestEmailApprovalOnBlocked:
 
         assert result is False
         assert task.status == TaskStatus.BLOCKED
+        assert mock_email.request_and_wait.call_count == 1
+
+
+class TestExitReason:
+    """主循环退出原因输出测试"""
+
+    def test_print_reason_when_pending_tasks_not_ready(self) -> None:
+        pending_task = Task(
+            id="T-P1",
+            title="等待任务",
+            description="desc",
+            status=TaskStatus.PENDING,
+            dependencies=["T-DONE-NEEDED"],
+        )
+        ctx = AgentContext(
+            project=ProjectConfig(
+                project_name="test",
+                project_description="测试",
+                project_root=".",
+            ),
+            config=AgentConfig(dry_run=True),
+            task_queue=[pending_task],
+        )
+
+        planner = MagicMock()
+        planner.get_next_pending.return_value = None
+        planner.check_dependencies.return_value = DependencyStatus.BLOCKED
+
+        orch = Orchestrator(
+            config=ctx.config,
+            planner=planner,
+            analyst=MagicMock(),
+            coder=MagicMock(),
+            reviewer=MagicMock(),
+            reflector=MagicMock(),
+            supervisor=MagicMock(),
+            context=ctx,
+        )
+        orch._save_state = MagicMock()  # type: ignore[method-assign]
+        orch._print_report = MagicMock()  # type: ignore[method-assign]
+
+        with patch("builtins.print") as mock_print:
+            orch.run()
+
+        printed = "\n".join(
+            str(call.args[0])
+            for call in mock_print.call_args_list
+            if call.args
+        )
+        assert "自动恢复" in printed
+        assert "退出原因" in printed
+        assert "无可执行任务" in printed
+        assert "依赖摘要" in printed
