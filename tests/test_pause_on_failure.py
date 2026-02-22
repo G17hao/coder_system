@@ -8,9 +8,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent_system.models.context import AgentConfig, AgentContext
-from agent_system.models.project_config import ProjectConfig
+from agent_system.models.project_config import EmailApprovalConfig, ProjectConfig
 from agent_system.models.task import Task, TaskStatus
 from agent_system.orchestrator import Orchestrator
+from agent_system.services.email_approval import EmailApprovalDecision
 
 
 def _make_orchestrator(dry_run: bool = True) -> Orchestrator:
@@ -255,3 +256,68 @@ class TestRunPausesOnFailure:
         # 任务被执行两次（失败后重试）
         assert orch.run_single_task.call_count == 2  # type: ignore[attr-defined]
         assert tasks[0].status == TaskStatus.DONE
+
+
+class TestEmailApprovalOnBlocked:
+    """BLOCKED 状态下邮件审批控制测试"""
+
+    def _make_blocked_orchestrator(self) -> Orchestrator:
+        config = ProjectConfig(
+            project_name="test",
+            project_description="测试",
+            project_root=".",
+            email_approval=EmailApprovalConfig(enabled=True),
+        )
+        agent_config = AgentConfig(dry_run=True)
+        ctx = AgentContext(project=config, config=agent_config)
+        orch = Orchestrator(
+            config=agent_config,
+            planner=MagicMock(),
+            analyst=MagicMock(),
+            coder=MagicMock(),
+            reviewer=MagicMock(),
+            reflector=MagicMock(),
+            supervisor=MagicMock(),
+            context=ctx,
+        )
+        return orch
+
+    def test_blocked_continue_by_email(self) -> None:
+        """邮件回复 CONTINUE 时，任务应重置为 pending 并继续"""
+        orch = self._make_blocked_orchestrator()
+        task = Task(id="T1", title="测试任务", description="desc", status=TaskStatus.BLOCKED)
+        task.error = "[Supervisor] waiting"
+
+        mock_email = MagicMock()
+        mock_email.request_and_wait.return_value = EmailApprovalDecision(
+            action="continue",
+            hint="请优先修复类型不匹配",
+            sender="user@example.com",
+        )
+        orch._email_approval = mock_email  # type: ignore[attr-defined]
+
+        result = orch._handle_paused_task(task)
+
+        assert result is True
+        assert task.status == TaskStatus.PENDING
+        assert task.retry_count == 0
+        assert task.error is None
+        assert task.supervisor_hint == "请优先修复类型不匹配"
+
+    def test_blocked_stop_by_email(self) -> None:
+        """邮件回复 STOP 时，任务保持阻塞并停止主循环"""
+        orch = self._make_blocked_orchestrator()
+        task = Task(id="T2", title="测试任务2", description="desc", status=TaskStatus.BLOCKED)
+        task.error = "[Supervisor] waiting"
+
+        mock_email = MagicMock()
+        mock_email.request_and_wait.return_value = EmailApprovalDecision(
+            action="stop",
+            sender="user@example.com",
+        )
+        orch._email_approval = mock_email  # type: ignore[attr-defined]
+
+        result = orch._handle_paused_task(task)
+
+        assert result is False
+        assert task.status == TaskStatus.BLOCKED

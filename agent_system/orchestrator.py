@@ -19,6 +19,7 @@ from agent_system.models.context import AgentConfig, AgentContext
 from agent_system.models.project_config import ProjectConfig
 from agent_system.models.task import ReviewResult, Task, TaskStatus
 from agent_system.services.conversation_logger import ConversationLogger
+from agent_system.services.email_approval import EmailApprovalDecision, EmailApprovalService
 from agent_system.services.file_service import FileService
 from agent_system.services.git_service import GitService, GitError
 from agent_system.services.llm import LLMService
@@ -68,6 +69,7 @@ class Orchestrator:
         self._file_service: FileService | None = None
         self._reflections_dir: Path | None = None
         self._conversation_logger: ConversationLogger | None = None
+        self._email_approval: EmailApprovalService | None = None
 
     @property
     def context(self) -> AgentContext:
@@ -227,9 +229,9 @@ class Orchestrator:
             self.run_single_task(task)
             self._save_state()
 
-            # 任务失败/阻塞后暂停，等待用户输入提示词
+            # 任务失败/阻塞后暂停，等待人工控制（支持邮件审批）
             if task.status in (TaskStatus.FAILED, TaskStatus.BLOCKED):
-                should_continue = self._prompt_user_hint(task)
+                should_continue = self._handle_paused_task(task)
                 if not should_continue:
                     logger.info("用户选择停止，退出主循环")
                     break
@@ -841,6 +843,48 @@ class Orchestrator:
             f"  [用户提示] 任务 {task.id} 重置为 PENDING，提示: {hint[:120]}"
         )
         return True
+
+    def _handle_paused_task(self, task: Task) -> bool:
+        """处理任务暂停后的人工介入。"""
+        if task.status == TaskStatus.BLOCKED:
+            email_result = self._handle_email_approval(task)
+            if email_result is not None:
+                return email_result
+        return self._prompt_user_hint(task)
+
+    def _handle_email_approval(self, task: Task) -> bool | None:
+        """通过邮件通知并等待审批；未启用时返回 None。"""
+        if self._context is None:
+            return None
+
+        cfg = getattr(self._context.project, "email_approval", None)
+        if cfg is None or not getattr(cfg, "enabled", False):
+            return None
+
+        if self._email_approval is None:
+            self._email_approval = EmailApprovalService(cfg)
+
+        try:
+            logger.info("  [email] Supervisor 暂停，发送邮件审批并等待回复...")
+            decision: EmailApprovalDecision = self._email_approval.request_and_wait(task)
+        except Exception as e:
+            logger.warning(f"  [email] 邮件审批流程失败，回退终端交互: {e}")
+            return None
+
+        if decision.action == "continue":
+            hint = decision.hint.strip() or "邮件审批通过：继续执行"
+            task.supervisor_hint = hint
+            task.supervisor_plan = None
+            task.status = TaskStatus.PENDING
+            task.retry_count = 0
+            task.error = None
+            logger.info(
+                f"  [email] 收到继续指令，任务 {task.id} 重置为 PENDING，提示: {hint[:120]}"
+            )
+            return True
+
+        logger.info(f"  [email] 收到停止指令或超时，任务 {task.id} 维持暂停")
+        return False
 
     def _sync_llm_usage(self) -> None:
         """将 LLMService 的累计 usage 同步到 AgentContext"""
