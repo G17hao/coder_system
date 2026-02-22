@@ -413,6 +413,8 @@ class TestCLI:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
             cwd=str(Path(__file__).parent.parent),
         )
@@ -429,6 +431,8 @@ class TestCLI:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
             cwd=str(Path(__file__).parent.parent),
         )
@@ -442,6 +446,8 @@ class TestCLI:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
             cwd=str(Path(__file__).parent.parent),
         )
@@ -455,6 +461,8 @@ class TestCLI:
             [sys.executable, "-m", "agent_system", "--help"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
             cwd=str(Path(__file__).parent.parent),
         )
