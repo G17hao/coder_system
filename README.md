@@ -115,34 +115,40 @@ python -m agent_system --project-template > projects/my-project.json
 }
 ```
 
-### `email_approval`（Supervisor 暂停邮件审批，可选）
+### `email_approval_config_file`（Supervisor 暂停邮件审批，可选）
 
 当任务被 `Supervisor` 判定为 `halt`（进入 `BLOCKED`）时，可通过邮件通知人工决策：
 
 - 回复 `CONTINUE: <提示词>`：继续执行并将提示词注入下一轮修复
 - 回复 `STOP`：保持暂停
 
-示例配置：
+建议将邮件配置放到独立文件（避免把邮箱配置与主项目配置混在一起）：
 
 ```json
 {
-  "email_approval": {
-    "enabled": true,
-    "smtp_host": "smtp.example.com",
-    "smtp_port": 465,
-    "smtp_user": "bot@example.com",
-    "smtp_password_env": "AGENT_SMTP_PASSWORD",
-    "imap_host": "imap.example.com",
-    "imap_port": 993,
-    "imap_user": "bot@example.com",
-    "imap_password_env": "AGENT_IMAP_PASSWORD",
-    "notify_to": "owner@example.com",
-    "notify_from": "bot@example.com",
-    "approval_sender": "owner@example.com",
-    "subject_prefix": "[AgentSystem]",
-    "poll_interval_sec": 15,
-    "max_wait_sec": 1800
-  }
+  "email_approval_config_file": "./config/email_approval.local.json"
+}
+```
+
+`email_approval.local.json` 示例：
+
+```json
+{
+  "enabled": true,
+  "smtp_host": "smtp.example.com",
+  "smtp_port": 465,
+  "smtp_user": "bot@example.com",
+  "smtp_password_env": "AGENT_SMTP_PASSWORD",
+  "imap_host": "imap.example.com",
+  "imap_port": 993,
+  "imap_user": "bot@example.com",
+  "imap_password_env": "AGENT_IMAP_PASSWORD",
+  "notify_to": "owner@example.com",
+  "notify_from": "bot@example.com",
+  "approval_sender": "owner@example.com",
+  "subject_prefix": "[AgentSystem]",
+  "poll_interval_sec": 15,
+  "max_wait_sec": 1800
 }
 ```
 

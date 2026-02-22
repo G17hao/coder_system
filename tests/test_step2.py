@@ -133,6 +133,61 @@ class TestProjectConfig:
         with pytest.raises(FileNotFoundError):
             ProjectConfig.from_file("/tmp/nonexistent_project.json")
 
+    def test_load_with_external_email_approval_file(self) -> None:
+        """email_approval 可从独立配置文件加载"""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            cfg_dir = base / "config"
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+
+            email_cfg = cfg_dir / "email_approval.local.json"
+            email_cfg.write_text(
+                json.dumps(
+                    {
+                        "enabled": True,
+                        "smtp_host": "smtp.qq.com",
+                        "smtp_port": 465,
+                        "smtp_user": "bot@qq.com",
+                        "smtp_password_env": "AGENT_SMTP_PASSWORD",
+                        "imap_host": "imap.qq.com",
+                        "imap_port": 993,
+                        "imap_user": "bot@qq.com",
+                        "imap_password_env": "AGENT_IMAP_PASSWORD",
+                        "notify_to": "owner@qq.com",
+                        "notify_from": "bot@qq.com",
+                        "approval_sender": "owner@qq.com",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            project_file = base / "project.json"
+            project_file.write_text(
+                json.dumps(
+                    {
+                        "project_name": "test-project",
+                        "project_description": "desc",
+                        "project_root": "/tmp/project",
+                        "reference_roots": ["/tmp/ref"],
+                        "git_branch": "feat/test",
+                        "coding_conventions": "no any",
+                        "review_checklist": ["ok"],
+                        "review_commands": ["echo ok"],
+                        "task_categories": ["infrastructure"],
+                        "initial_tasks": [],
+                        "email_approval_config_file": "./config/email_approval.local.json",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            config = ProjectConfig.from_file(project_file)
+            assert config.email_approval.enabled is True
+            assert config.email_approval.smtp_host == "smtp.qq.com"
+            assert config.email_approval.notify_to == "owner@qq.com"
+
 
 class TestGitService:
     """GitService 基本测试"""

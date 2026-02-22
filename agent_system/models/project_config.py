@@ -147,6 +147,7 @@ class ProjectConfig:
     review_checklist: list[str] = field(default_factory=list)
     review_commands: list[str] = field(default_factory=list)
     prompt_overrides: dict[str, str] = field(default_factory=dict)
+    email_approval_config_file: str = ""
     email_approval: EmailApprovalConfig = field(default_factory=EmailApprovalConfig)
     task_categories: list[str] = field(default_factory=list)
     initial_tasks: list[TaskSeed] = field(default_factory=list)
@@ -163,17 +164,33 @@ class ProjectConfig:
             "review_checklist": self.review_checklist,
             "review_commands": self.review_commands,
             "prompt_overrides": self.prompt_overrides,
+            "email_approval_config_file": self.email_approval_config_file,
             "email_approval": self.email_approval.to_dict(),
             "task_categories": self.task_categories,
             "initial_tasks": [t.to_dict() for t in self.initial_tasks],
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> ProjectConfig:
+    def from_dict(cls, data: dict, source_file: Path | None = None) -> ProjectConfig:
         """从字典创建，校验必填字段"""
         missing = [f for f in _REQUIRED_FIELDS if f not in data]
         if missing:
             raise ValueError(f"项目配置缺少必填字段: {', '.join(missing)}")
+
+        email_cfg_file_raw = str(data.get("email_approval_config_file", "")).strip()
+        if email_cfg_file_raw:
+            cfg_path = Path(email_cfg_file_raw)
+            if not cfg_path.is_absolute() and source_file is not None:
+                cfg_path = (source_file.parent / cfg_path).resolve()
+            if not cfg_path.exists():
+                raise FileNotFoundError(f"email_approval 配置文件不存在: {cfg_path}")
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                email_data = json.load(f)
+            if not isinstance(email_data, dict):
+                raise ValueError("email_approval 配置文件内容必须是 JSON 对象")
+            email_approval = EmailApprovalConfig.from_dict(email_data)
+        else:
+            email_approval = EmailApprovalConfig.from_dict(data.get("email_approval", {}))
 
         return cls(
             project_name=data["project_name"],
@@ -189,7 +206,8 @@ class ProjectConfig:
             review_checklist=data.get("review_checklist", []),
             review_commands=data.get("review_commands", []),
             prompt_overrides=data.get("prompt_overrides", {}),
-            email_approval=EmailApprovalConfig.from_dict(data.get("email_approval", {})),
+            email_approval_config_file=email_cfg_file_raw,
+            email_approval=email_approval,
             task_categories=data.get("task_categories", []),
             initial_tasks=[
                 TaskSeed.from_dict(t) for t in data.get("initial_tasks", [])
@@ -208,4 +226,4 @@ class ProjectConfig:
         with open(p, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        return cls.from_dict(data)
+        return cls.from_dict(data, source_file=p)
