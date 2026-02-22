@@ -16,3 +16,4 @@ logs/*.log
 *.log
 .env
 projects/
+run.bat
