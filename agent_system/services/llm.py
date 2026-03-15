@@ -21,10 +21,15 @@ logger = logging.getLogger(__name__)
 
 _MAX_REQUEST_BYTES = 5_500_000
 _MIN_MESSAGES_TO_KEEP = 6
+# 触发滚动摘要的请求体大小阈值，超过后优先尝试压缩历史上下文。
 _DEFAULT_SUMMARY_TRIGGER_BYTES = 4_200_000
+# 触发滚动摘要的最小消息数，避免在短对话里过早生成摘要。
 _DEFAULT_SUMMARY_TRIGGER_MESSAGE_COUNT = 24
+# 执行滚动摘要后仍然原样保留的最近消息条数。
 _DEFAULT_SUMMARY_KEEP_RECENT_MESSAGES = 8
+# 将摘要同步回对话日志时，额外保留的最近日志条数。
 _DEFAULT_SUMMARY_KEEP_RECENT_LOG_ENTRIES = 8
+# 已存在摘要时，再次触发摘要前至少需要新增的消息条数。
 _DEFAULT_SUMMARY_MIN_NEW_MESSAGES_AFTER_SUMMARY = 12
 _SUMMARY_BLOCK_START = "\n\n[CONTEXT SUMMARY START]\n"
 _SUMMARY_BLOCK_END = "\n[CONTEXT SUMMARY END]\n"
