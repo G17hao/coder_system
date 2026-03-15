@@ -297,17 +297,24 @@ def _extract_summary_from_system_prompt(system_prompt: str) -> str:
     return summary_block[first_newline + 1:].strip()
 
 
-def _should_refresh_summary(
+def _get_summary_trigger_reason(
     messages: list[dict[str, Any]],
     payload: dict[str, int],
     summary_trigger_bytes: int,
     summary_keep_recent_messages: int,
-) -> bool:
-    """决定是否需要执行滚动摘要，仅按请求体大小阈值触发。"""
+) -> str | None:
+    """返回触发滚动摘要的原因；未触发时返回 None。"""
     if len(messages) <= summary_keep_recent_messages:
-        return False
+        return None
 
-    return payload["payload_bytes"] >= summary_trigger_bytes
+    if payload["payload_bytes"] < summary_trigger_bytes:
+        return None
+
+    return (
+        f"请求体达到摘要阈值：payload≈{payload['payload_bytes']}B，"
+        f"trigger={summary_trigger_bytes}B，"
+        f"可压缩历史消息={len(messages) - summary_keep_recent_messages} 条"
+    )
 
 
 def _merge_summary_into_system_prompt(system_prompt: str, summary: str, compressed_count: int) -> str:
@@ -687,12 +694,13 @@ class LLMService:
             _DEFAULT_SUMMARY_KEEP_RECENT_MESSAGES,
         )
         payload = _estimate_request_payload(system_prompt, messages, tools)
-        if not _should_refresh_summary(
+        summary_reason = _get_summary_trigger_reason(
             messages,
             payload,
             summary_trigger_bytes,
             summary_keep_recent_messages,
-        ):
+        )
+        if summary_reason is None:
             return (system_prompt, messages, False)
 
         compress_count = len(messages) - summary_keep_recent_messages
@@ -703,7 +711,8 @@ class LLMService:
 
         tag = f"[{label}]" if label else "[LLM]"
         logger.info(
-            f"    {tag} 开始滚动摘要：压缩前 {len(entries_to_compress)} 条消息，保留后 {len(remaining_messages)} 条"
+            f"    {tag} 开始滚动摘要：{summary_reason} | "
+            f"压缩前 {len(entries_to_compress)} 条消息，保留后 {len(remaining_messages)} 条"
         )
 
         history_text = "\n\n".join(
