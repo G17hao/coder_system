@@ -1068,10 +1068,8 @@ class Orchestrator:
             timeout=self._config.llm_timeout,
             max_retries=self._config.llm_max_retries,
             summary_trigger_bytes=self._config.summary_trigger_bytes,
-            summary_trigger_message_count=self._config.summary_trigger_message_count,
             summary_keep_recent_messages=self._config.summary_keep_recent_messages,
             summary_keep_recent_log_entries=self._config.summary_keep_recent_log_entries,
-            summary_min_new_messages_after_summary=self._config.summary_min_new_messages_after_summary,
         )
         # 传递缓存配置到 LLM 服务
         llm._cache_min_tokens = self._config.cache_min_tokens

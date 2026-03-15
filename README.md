@@ -137,19 +137,15 @@ llm_timeout = 300
 
 [summary]
 trigger_bytes = 4200000
-trigger_message_count = 24
 keep_recent_messages = 8
 keep_recent_log_entries = 8
-min_new_messages_after_summary = 12
 ```
 
 摘要参数说明：
 
 - `trigger_bytes`：请求体超过该字节数时优先触发滚动摘要
-- `trigger_message_count`：首次触发摘要所需的最少消息数
 - `keep_recent_messages`：摘要后继续保留的最近消息数
 - `keep_recent_log_entries`：对话日志中保留的最近原始记录数
-- `min_new_messages_after_summary`：已有摘要后，再次摘要前要求新增的最少消息数
 
 ## `project.json` 关键字段
 

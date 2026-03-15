@@ -212,7 +212,7 @@ def test_fit_messages_to_payload_trims_large_tool_results() -> None:
 
 
 def test_tools_loop_summarizes_old_messages_into_system_prompt() -> None:
-    """工具循环达到阈值时，应先做滚动摘要，再用摘要后的 system prompt 发起正式请求。"""
+    """请求体达到字节阈值时，应先做滚动摘要，再用摘要后的 system prompt 发起正式请求。"""
     from agent_system.services.llm import LLMResponse, TokenUsage
     from agent_system.services.llm import LLMService
 
@@ -235,7 +235,7 @@ def test_tools_loop_summarizes_old_messages_into_system_prompt() -> None:
     service.call = _fake_call  # type: ignore[method-assign]
 
     messages = [
-        {"role": "user", "content": f"message-{index}"}
+        {"role": "user", "content": f"message-{index}-" + ("x" * 400_000)}
         for index in range(26)
     ]
 
@@ -274,7 +274,7 @@ def test_tools_loop_summary_updates_conversation_log() -> None:
 
     log = ConversationLog(task_id="T-1", agent_name="reviewer")
     initial_messages = [
-        {"role": "user", "content": f"user-{index}"}
+        {"role": "user", "content": f"user-{index}-" + ("x" * 400_000)}
         for index in range(25)
     ]
 
@@ -295,7 +295,7 @@ def test_tools_loop_summary_updates_conversation_log() -> None:
 
 
 def test_tools_loop_does_not_summarize_small_history() -> None:
-    """轻量历史对话不应触发滚动摘要，避免摘要过于频繁。"""
+    """请求体未达到字节阈值时，不应仅因消息条数较多而触发滚动摘要。"""
     from agent_system.services.llm import LLMResponse, TokenUsage
     from agent_system.services.llm import LLMService
 
@@ -312,7 +312,7 @@ def test_tools_loop_does_not_summarize_small_history() -> None:
 
     messages = [
         {"role": "user", "content": f"message-{index}"}
-        for index in range(14)
+        for index in range(40)
     ]
 
     result = service.call_with_tools_loop(

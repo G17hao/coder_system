@@ -77,10 +77,8 @@ def _load_ini_overrides(config_path: Path | None) -> dict[str, object]:
         ("agent", "enable_llm_cache", "enable_llm_cache", "bool"),
         ("agent", "cache_min_tokens", "cache_min_tokens", "int"),
         ("summary", "trigger_bytes", "summary_trigger_bytes", "int"),
-        ("summary", "trigger_message_count", "summary_trigger_message_count", "int"),
         ("summary", "keep_recent_messages", "summary_keep_recent_messages", "int"),
         ("summary", "keep_recent_log_entries", "summary_keep_recent_log_entries", "int"),
-        ("summary", "min_new_messages_after_summary", "summary_min_new_messages_after_summary", "int"),
     ]
 
     getters = {

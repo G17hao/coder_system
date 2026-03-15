@@ -137,10 +137,8 @@ def test_main_loads_summary_settings_from_ini(monkeypatch, tmp_path: Path, capsy
         "\n"
         "[summary]\n"
         "trigger_bytes = 4567890\n"
-        "trigger_message_count = 33\n"
         "keep_recent_messages = 9\n"
-        "keep_recent_log_entries = 7\n"
-        "min_new_messages_after_summary = 15\n",
+        "keep_recent_log_entries = 7\n",
         encoding="utf-8",
     )
 
@@ -172,7 +170,5 @@ def test_main_loads_summary_settings_from_ini(monkeypatch, tmp_path: Path, capsy
     assert config is not None
     assert config.project_config_file == "sample.json"
     assert config.summary_trigger_bytes == 4567890
-    assert config.summary_trigger_message_count == 33
     assert config.summary_keep_recent_messages == 9
     assert config.summary_keep_recent_log_entries == 7
-    assert config.summary_min_new_messages_after_summary == 15

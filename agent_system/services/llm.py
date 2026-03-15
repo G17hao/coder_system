@@ -23,14 +23,10 @@ _MAX_REQUEST_BYTES = 5_500_000
 _MIN_MESSAGES_TO_KEEP = 6
 # 触发滚动摘要的请求体大小阈值，超过后优先尝试压缩历史上下文。
 _DEFAULT_SUMMARY_TRIGGER_BYTES = 4_200_000
-# 触发滚动摘要的最小消息数，避免在短对话里过早生成摘要。
-_DEFAULT_SUMMARY_TRIGGER_MESSAGE_COUNT = 24
 # 执行滚动摘要后仍然原样保留的最近消息条数。
 _DEFAULT_SUMMARY_KEEP_RECENT_MESSAGES = 8
 # 将摘要同步回对话日志时，额外保留的最近日志条数。
 _DEFAULT_SUMMARY_KEEP_RECENT_LOG_ENTRIES = 8
-# 已存在摘要时，再次触发摘要前至少需要新增的消息条数。
-_DEFAULT_SUMMARY_MIN_NEW_MESSAGES_AFTER_SUMMARY = 12
 _SUMMARY_BLOCK_START = "\n\n[CONTEXT SUMMARY START]\n"
 _SUMMARY_BLOCK_END = "\n[CONTEXT SUMMARY END]\n"
 
@@ -302,26 +298,16 @@ def _extract_summary_from_system_prompt(system_prompt: str) -> str:
 
 
 def _should_refresh_summary(
-    system_prompt: str,
     messages: list[dict[str, Any]],
     payload: dict[str, int],
     summary_trigger_bytes: int,
-    summary_trigger_message_count: int,
     summary_keep_recent_messages: int,
-    summary_min_new_messages_after_summary: int,
 ) -> bool:
-    """决定是否需要执行滚动摘要，避免过于频繁地重复摘要。"""
-    if len(messages) <= summary_keep_recent_messages + 1:
+    """决定是否需要执行滚动摘要，仅按请求体大小阈值触发。"""
+    if len(messages) <= summary_keep_recent_messages:
         return False
 
-    if payload["payload_bytes"] >= summary_trigger_bytes:
-        return True
-
-    existing_summary = _extract_summary_from_system_prompt(system_prompt)
-    if existing_summary:
-        return len(messages) >= (summary_keep_recent_messages + summary_min_new_messages_after_summary)
-
-    return len(messages) >= summary_trigger_message_count
+    return payload["payload_bytes"] >= summary_trigger_bytes
 
 
 def _merge_summary_into_system_prompt(system_prompt: str, summary: str, compressed_count: int) -> str:
@@ -358,10 +344,8 @@ class LLMService:
         timeout: float = 300.0,
         max_retries: int = 4,
         summary_trigger_bytes: int = _DEFAULT_SUMMARY_TRIGGER_BYTES,
-        summary_trigger_message_count: int = _DEFAULT_SUMMARY_TRIGGER_MESSAGE_COUNT,
         summary_keep_recent_messages: int = _DEFAULT_SUMMARY_KEEP_RECENT_MESSAGES,
         summary_keep_recent_log_entries: int = _DEFAULT_SUMMARY_KEEP_RECENT_LOG_ENTRIES,
-        summary_min_new_messages_after_summary: int = _DEFAULT_SUMMARY_MIN_NEW_MESSAGES_AFTER_SUMMARY,
     ) -> None:
         client_kwargs: dict[str, Any] = {
             "api_key": api_key,
@@ -381,10 +365,8 @@ class LLMService:
         # MCP 额外工具
         self._extra_tools: list[dict[str, Any]] = []
         self._summary_trigger_bytes = summary_trigger_bytes
-        self._summary_trigger_message_count = summary_trigger_message_count
         self._summary_keep_recent_messages = summary_keep_recent_messages
         self._summary_keep_recent_log_entries = summary_keep_recent_log_entries
-        self._summary_min_new_messages_after_summary = summary_min_new_messages_after_summary
 
     @property
     def usage(self) -> TokenUsage:
@@ -699,30 +681,17 @@ class LLMService:
     ) -> tuple[str, list[dict[str, Any]], bool]:
         """将较早消息滚动摘要到 system prompt，真正缩短后续请求上下文。"""
         summary_trigger_bytes = getattr(self, "_summary_trigger_bytes", _DEFAULT_SUMMARY_TRIGGER_BYTES)
-        summary_trigger_message_count = getattr(
-            self,
-            "_summary_trigger_message_count",
-            _DEFAULT_SUMMARY_TRIGGER_MESSAGE_COUNT,
-        )
         summary_keep_recent_messages = getattr(
             self,
             "_summary_keep_recent_messages",
             _DEFAULT_SUMMARY_KEEP_RECENT_MESSAGES,
         )
-        summary_min_new_messages_after_summary = getattr(
-            self,
-            "_summary_min_new_messages_after_summary",
-            _DEFAULT_SUMMARY_MIN_NEW_MESSAGES_AFTER_SUMMARY,
-        )
         payload = _estimate_request_payload(system_prompt, messages, tools)
         if not _should_refresh_summary(
-            system_prompt,
             messages,
             payload,
             summary_trigger_bytes,
-            summary_trigger_message_count,
             summary_keep_recent_messages,
-            summary_min_new_messages_after_summary,
         ):
             return (system_prompt, messages, False)
 
