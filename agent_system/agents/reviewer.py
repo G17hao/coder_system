@@ -22,6 +22,7 @@ from agent_system.tools.read_file import READ_FILE_TOOL_DEFINITION
 from agent_system.tools.grep_content import GREP_CONTENT_TOOL_DEFINITION
 from agent_system.tools.diff_file import DIFF_FILE_TOOL_DEFINITION
 from agent_system.tools.ts_check import TS_CHECK_TOOL_DEFINITION
+from agent_system.services.mcp_client import MCPClient
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,16 @@ class Reviewer(BaseAgent):
         if hasattr(project, "review_commands"):
             commands_text = json.dumps(project.review_commands, ensure_ascii=False)
 
+        tool_generated_files_text = "无"
+        if hasattr(project, "tool_generated_files") and project.tool_generated_files:
+            lines: list[str] = []
+            for rule in project.tool_generated_files:
+                reason = f"；原因：{rule.reason}" if rule.reason else ""
+                lines.append(
+                    f"- 匹配 `{rule.pattern}` 的文件必须由 `{rule.generator}` 生成{reason}"
+                )
+            tool_generated_files_text = "\n".join(lines)
+
         conventions = getattr(project, "coding_conventions", "")
         prompt_overrides = getattr(project, "prompt_overrides", {}) or {}
         project_specific_prompt = str(prompt_overrides.get("reviewer", "")).strip()
@@ -85,6 +96,7 @@ class Reviewer(BaseAgent):
             "codingConventions": conventions or "无",
             "reviewChecklist": checklist_text or "无",
             "reviewCommands": commands_text or "无",
+            "toolGeneratedFileRules": tool_generated_files_text,
             "projectSpecificPrompt": project_specific_prompt or "无",
         })
 
@@ -216,10 +228,35 @@ class Reviewer(BaseAgent):
         ]
 
         class ReviewToolExecutor:
-            def __init__(self, path_guard: PathGuard) -> None:
+            def __init__(self, path_guard: PathGuard, mcp_client: MCPClient | None = None) -> None:
                 self._guard = path_guard
+                self._mcp_client = mcp_client
 
             def execute(self, name: str, tool_input: dict[str, Any]) -> str:
+                # 优先尝试 MCP 工具
+                if self._mcp_client and name in self._mcp_client.get_tool_names():
+                    import asyncio
+                    try:
+                        loop = asyncio.get_event_loop()
+                    except RuntimeError:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                    
+                    if loop.is_running():
+                        future = asyncio.ensure_future(self._mcp_client.call_tool(name, tool_input))
+                        import concurrent.futures
+                        with concurrent.futures.ThreadPoolExecutor() as executor:
+                            result_future = asyncio.run_coroutine_threadsafe(future, loop)
+                            result = result_future.result(timeout=60)
+                    else:
+                        result = loop.run_until_complete(self._mcp_client.call_tool(name, tool_input))
+                    
+                    if result.success:
+                        return result.content
+                    else:
+                        return f"MCP 工具调用失败：{result.error}"
+                
+                # 使用本地工具
                 if name == "run_command":
                     result = run_command_tool(
                         command=tool_input["command"],
@@ -342,11 +379,14 @@ class Reviewer(BaseAgent):
 
                 return f"未知工具: {name}"
 
+        # 获取 MCP 客户端（如果可用）
+        mcp_client = getattr(self._llm, '_mcp_client', None)
+        
         response = self._llm.call_with_tools_loop(
             system_prompt=system_prompt,
             messages=[{"role": "user", "content": user_message}],
             tools=tools,
-            tool_executor=ReviewToolExecutor(path_guard=guard),
+            tool_executor=ReviewToolExecutor(path_guard=guard, mcp_client=mcp_client),
             max_iterations=30,
             soft_limit=10,
             conversation_log=self._active_conversation_log,

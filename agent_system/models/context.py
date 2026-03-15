@@ -25,6 +25,15 @@ class AgentConfig:
     call_limit: int = 0  # API 调用次数上限，0 表示不限制
     llm_timeout: float = 300.0
     llm_max_retries: int = 4
+    model_context_window: int = 200000  # 模型上下文窗口大小（token），用于计算压缩阈值
+    context_compress_threshold: float = 0.7  # Token 使用率达到 70% 时触发压缩
+    enable_llm_cache: bool = True  # 启用 LLM 显式缓存（DashScope/阿里百炼）
+    cache_min_tokens: int = 1024  # 启用缓存的最小 token 数
+    summary_trigger_bytes: int = 4_200_000  # 摘要触发的请求体阈值（字节），超过后优先生成滚动摘要
+    summary_trigger_message_count: int = 24  # 首次触发摘要所需的最少消息数，避免短对话过早压缩
+    summary_keep_recent_messages: int = 8  # 摘要后保留的最近消息数，确保工具循环仍有足够近因上下文
+    summary_keep_recent_log_entries: int = 8  # 对话日志中保留的最近原始记录数，避免日志无限增长
+    summary_min_new_messages_after_summary: int = 12  # 已有摘要后再次触发摘要前，至少新增多少条消息
 
 @dataclass
 class AgentContext:

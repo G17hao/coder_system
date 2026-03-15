@@ -12,7 +12,7 @@ import pytest
 from agent_system.agents.coder import CodeChanges, FileChange, CoderToolExecutor
 from agent_system.agents.reviewer import Reviewer
 from agent_system.models.context import AgentConfig, AgentContext
-from agent_system.models.project_config import ProjectConfig
+from agent_system.models.project_config import ProjectConfig, ToolGeneratedFileRule
 from agent_system.models.task import Task
 from agent_system.tools.run_command import run_command_tool
 
@@ -106,6 +106,28 @@ class TestReviewerAgent:
         prompt = reviewer.build_system_prompt(config)
         assert "无 any 类型" in prompt
         assert "编译通过" in prompt
+
+    def test_system_prompt_injects_tool_generated_file_rules(self) -> None:
+        """Reviewer prompt 应注入工具生成文件规则，供审查阶段卡掉手写产物"""
+        mock_llm = MagicMock()
+        reviewer = Reviewer(llm=mock_llm)
+        config = ProjectConfig(
+            project_name="test",
+            project_description="测试",
+            project_root=".",
+            tool_generated_files=[
+                ToolGeneratedFileRule(
+                    pattern="assets/resources/**/*.prefab",
+                    generator="cocos-creator / csdImporter",
+                    reason="Prefab 不允许手写",
+                )
+            ],
+            review_commands=[],
+        )
+        prompt = reviewer.build_system_prompt(config)
+        assert "assets/resources/**/*.prefab" in prompt
+        assert "cocos-creator / csdImporter" in prompt
+        assert "Prefab 不允许手写" in prompt
 
     def test_reviewer_pass(self) -> None:
         """审查通过场景"""

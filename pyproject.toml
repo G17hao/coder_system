@@ -9,6 +9,7 @@ description = "通用单线程 Agent 自动化编码系统"
 requires-python = ">=3.11"
 dependencies = [
     "anthropic>=0.39.0",
+    "mcp>=1.0.0",
 ]
 
 [project.optional-dependencies]

@@ -6,6 +6,8 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from agent_system.models.mcp_config import MCPServerRef
+
 
 @dataclass
 class PatternMapping:
@@ -21,6 +23,30 @@ class PatternMapping:
         return cls(
             from_pattern=data["from_pattern"],
             to_pattern=data["to_pattern"],
+        )
+
+
+@dataclass
+class ToolGeneratedFileRule:
+    """必须由工具生成的文件规则"""
+
+    pattern: str
+    generator: str
+    reason: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "pattern": self.pattern,
+            "generator": self.generator,
+            "reason": self.reason,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> ToolGeneratedFileRule:
+        return cls(
+            pattern=str(data["pattern"]),
+            generator=str(data["generator"]),
+            reason=str(data.get("reason", "")),
         )
 
 
@@ -143,9 +169,13 @@ class ProjectConfig:
     reference_roots: list[str] = field(default_factory=list)
     git_branch: str = "feat/agent-auto"
     coding_conventions: str = ""
+    conventions_file: str = ""
     pattern_mappings: list[PatternMapping] = field(default_factory=list)
+    tool_generated_files: list[ToolGeneratedFileRule] = field(default_factory=list)
     review_checklist: list[str] = field(default_factory=list)
     review_commands: list[str] = field(default_factory=list)
+    mcp_servers: list[MCPServerRef] = field(default_factory=list)
+    mcp_default_enabled: bool = False
     prompt_overrides: dict[str, str] = field(default_factory=dict)
     email_approval_config_file: str = ""
     email_approval: EmailApprovalConfig = field(default_factory=EmailApprovalConfig)
@@ -160,9 +190,13 @@ class ProjectConfig:
             "reference_roots": self.reference_roots,
             "git_branch": self.git_branch,
             "coding_conventions": self.coding_conventions,
+            "conventions_file": self.conventions_file,
             "pattern_mappings": [m.to_dict() for m in self.pattern_mappings],
+            "tool_generated_files": [r.to_dict() for r in self.tool_generated_files],
             "review_checklist": self.review_checklist,
             "review_commands": self.review_commands,
+            "mcp_servers": [s.to_dict() for s in self.mcp_servers],
+            "mcp_default_enabled": self.mcp_default_enabled,
             "prompt_overrides": self.prompt_overrides,
             "email_approval_config_file": self.email_approval_config_file,
             "email_approval": self.email_approval.to_dict(),
@@ -199,12 +233,22 @@ class ProjectConfig:
             reference_roots=data.get("reference_roots", []),
             git_branch=data.get("git_branch", "feat/agent-auto"),
             coding_conventions=data.get("coding_conventions", ""),
+            conventions_file=str(data.get("conventions_file", "")).strip(),
             pattern_mappings=[
                 PatternMapping.from_dict(m)
                 for m in data.get("pattern_mappings", [])
             ],
+            tool_generated_files=[
+                ToolGeneratedFileRule.from_dict(rule)
+                for rule in data.get("tool_generated_files", [])
+            ],
             review_checklist=data.get("review_checklist", []),
             review_commands=data.get("review_commands", []),
+            mcp_servers=[
+                MCPServerRef.from_dict(server)
+                for server in data.get("mcp_servers", [])
+            ],
+            mcp_default_enabled=bool(data.get("mcp_default_enabled", False)),
             prompt_overrides=data.get("prompt_overrides", {}),
             email_approval_config_file=email_cfg_file_raw,
             email_approval=email_approval,

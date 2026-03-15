@@ -111,6 +111,28 @@ class TestCoderAgent:
         assert "无 any 类型" in prompt
         assert "npx tsc --noEmit" in prompt
 
+    def test_system_prompt_reads_configured_conventions_file(self, tmp_path: Path) -> None:
+        """Coder 应读取 project.json 指定的约定文件，而不是硬编码文件名"""
+        docs_dir = tmp_path / "docs"
+        docs_dir.mkdir()
+        conventions_path = docs_dir / "project-conventions.md"
+        conventions_path.write_text("统一日志前缀: [Agent]", encoding="utf-8")
+
+        mock_llm = MagicMock()
+        coder = Coder(llm=mock_llm)
+        config = ProjectConfig(
+            project_name="test",
+            project_description="测试项目",
+            project_root=str(tmp_path),
+            conventions_file="docs/project-conventions.md",
+            review_commands=[],
+        )
+
+        prompt = coder.build_system_prompt(config)
+
+        assert "docs/project-conventions.md" in prompt
+        assert "统一日志前缀: [Agent]" in prompt
+
     def test_coder_integration(self) -> None:
         """Coder 集成测试（mock LLM 返回预定义文件内容）"""
         canned_response = (

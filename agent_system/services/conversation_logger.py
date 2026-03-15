@@ -178,6 +178,43 @@ class ConversationLogger:
         """放弃当前对话记录，不保存"""
         self._active_log = None
 
+    def save_active_log_now(self) -> Path | None:
+        """立即保存当前活跃的对话记录（用于异常退出时保留）
+
+        Returns:
+            保存的文件路径，如果没有活跃对话则返回 None
+        """
+        if self._active_log is None:
+            return None
+
+        log = self._active_log
+        # 标记为强制保存（可能未完成）
+        if log.finished_at is None:
+            log.finished_at = datetime.now().isoformat()
+
+        # 创建 task 子目录
+        safe_task_id = log.task_id.replace("/", "_").replace("\\", "_")
+        task_dir = self._dir / safe_task_id
+        task_dir.mkdir(parents=True, exist_ok=True)
+
+        # 文件名：{agent_name}_{timestamp}_interrupted.json（异常退出时加 interrupted 后缀）
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        suffix = "_interrupted" if log.finished_at == log.started_at else ""
+        filename = f"{log.agent_name}_{timestamp}{suffix}.json"
+        filepath = task_dir / filename
+
+        try:
+            filepath.write_text(
+                json.dumps(log.to_dict(), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            logger.info(f"对话日志已保存（中断保护）: {filepath}")
+        except Exception as e:
+            logger.warning(f"保存对话日志失败：{e}")
+            return None
+
+        return filepath
+
 
 def load_conversation(filepath: str | Path) -> dict[str, Any]:
     """加载单个对话日志文件

@@ -51,6 +51,38 @@ run.bat status
 run.bat retry
 ```
 
+## 实用脚本
+
+列出当前 Cocos MCP Server 支持的全部操作：
+
+```bash
+python scripts/list_cocos_mcp_tools.py
+```
+
+输出 JSON：
+
+```bash
+python scripts/list_cocos_mcp_tools.py --json
+```
+
+如果本机还没安装 MCP SDK，需要先执行：
+
+```bash
+pip install "mcp[cli]"
+```
+
+## 项目初始化
+
+先创建项目配置，再做任务拆分：
+
+```bash
+# 交互式创建 project.json
+python -m agent_system --wizard
+
+# 基于已有 project.json 交互式拆任务
+python -m agent_system --task-wizard --project projects/my-project.json
+```
+
 ## 生成最小项目模板
 
 CLI 内置通用 `project.json` 模板输出能力：
@@ -70,6 +102,8 @@ python -m agent_system --project-template > projects/my-project.json
 | 参数 | 说明 |
 |------|------|
 | `--project-template` | 输出最小 `project.json` 模板（含 `prompt_overrides` 示例） |
+| `--wizard` | 进入项目配置向导，生成 `project.json` |
+| `--task-wizard` | 进入任务列表向导；可配合 `--project` 加载项目特定约束 |
 | `--project` | 项目配置文件路径 |
 | `--init` | 首次运行 |
 | `--resume` | 从断点恢复 |
@@ -82,7 +116,40 @@ python -m agent_system --project-template > projects/my-project.json
 | `--model` | 模型名称 |
 | `--budget` | Token 预算上限（0 不限制） |
 | `--call-limit` | 调用次数上限（0 不限制） |
+| `--ini-config` | 运行时 ini 配置文件路径；也支持环境变量 `AGENT_SYSTEM_INI` 或当前目录 `agent-system.ini` |
 | `--verbose` | 输出详细日志 |
+
+## ini 配置
+
+除命令行参数外，也可以通过 ini 文件配置运行时参数。加载优先级如下：
+
+1. `--ini-config <path>`
+2. 环境变量 `AGENT_SYSTEM_INI`
+3. 当前工作目录下的 `agent-system.ini`
+
+示例：
+
+```ini
+[agent]
+project = projects/h5-widget-replication.json
+model = qwen3.5-plus
+llm_timeout = 300
+
+[summary]
+trigger_bytes = 4200000
+trigger_message_count = 24
+keep_recent_messages = 8
+keep_recent_log_entries = 8
+min_new_messages_after_summary = 12
+```
+
+摘要参数说明：
+
+- `trigger_bytes`：请求体超过该字节数时优先触发滚动摘要
+- `trigger_message_count`：首次触发摘要所需的最少消息数
+- `keep_recent_messages`：摘要后继续保留的最近消息数
+- `keep_recent_log_entries`：对话日志中保留的最近原始记录数
+- `min_new_messages_after_summary`：已有摘要后，再次摘要前要求新增的最少消息数
 
 ## `project.json` 关键字段
 
@@ -106,6 +173,7 @@ python -m agent_system --project-template > projects/my-project.json
 ```json
 {
   "prompt_overrides": {
+    "task_wizard": "项目特定任务拆分偏好",
     "planner": "项目特定规划约束",
     "analyst": "项目特定分析约束",
     "coder": "项目特定实现约束",
@@ -114,6 +182,11 @@ python -m agent_system --project-template > projects/my-project.json
   }
 }
 ```
+
+说明：
+
+- `--wizard` 运行时还没有 `project.json`，因此不会读取任何项目注入提示
+- `--task-wizard` 是第二阶段工具，只有在已经存在 `project.json` 时才会消费 `prompt_overrides.task_wizard` 和 `task_categories`
 
 ### `email_approval_config_file`（Supervisor 暂停邮件审批，可选）
 

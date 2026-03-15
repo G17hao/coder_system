@@ -7,6 +7,8 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Literal
 
+from agent_system.models.mcp_config import MCPCapabilityConfig
+
 
 class TaskStatus(str, Enum):
     """任务状态枚举"""
@@ -63,6 +65,7 @@ class Task:
     supervisor_must_change_files: list[str] = field(default_factory=list)
     analysis_subtasks_generated: bool = False
     modified_files: list[str] = field(default_factory=list)
+    mcp_config: MCPCapabilityConfig = field(default_factory=MCPCapabilityConfig)  # MCP 能力配置
 
     def to_dict(self) -> dict:
         """序列化为字典"""
@@ -70,6 +73,8 @@ class Task:
         d["status"] = self.status.value
         if self.review_result is not None:
             d["review_result"] = self.review_result.to_dict()
+        # MCP 配置序列化
+        d["mcp_config"] = self.mcp_config.to_dict()
         return d
 
     @classmethod
@@ -77,6 +82,9 @@ class Task:
         """从字典反序列化"""
         review_data = data.get("review_result")
         review_result = ReviewResult.from_dict(review_data) if review_data else None
+
+        # MCP 配置反序列化
+        mcp_config = MCPCapabilityConfig.from_dict(data.get("mcp_config", {}))
 
         return cls(
             id=data["id"],
@@ -100,6 +108,7 @@ class Task:
             supervisor_must_change_files=data.get("supervisor_must_change_files", []),
             analysis_subtasks_generated=data.get("analysis_subtasks_generated", False),
             modified_files=data.get("modified_files", []),
+            mcp_config=mcp_config,
         )
 
     def to_json(self) -> str:

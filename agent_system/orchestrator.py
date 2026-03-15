@@ -24,6 +24,7 @@ from agent_system.services.email_approval import EmailApprovalDecision, EmailApp
 from agent_system.services.file_service import FileService
 from agent_system.services.git_service import GitService, GitError
 from agent_system.services.llm import LLMService
+from agent_system.services.mcp_client import MCPClient, MCPServerConfig
 from agent_system.services.state_store import StateStore
 
 logger = logging.getLogger(__name__)
@@ -67,12 +68,14 @@ class Orchestrator:
         self._supervisor = supervisor
 
         self._llm: LLMService | None = None
+        self._mcp_client: MCPClient | None = None
         self._state_store: StateStore | None = None
         self._git: GitService | None = None
         self._file_service: FileService | None = None
         self._reflections_dir: Path | None = None
         self._conversation_logger: ConversationLogger | None = None
         self._email_approval: EmailApprovalService | None = None
+        self._git_unavailable_reason: str | None = None
 
     @property
     def context(self) -> AgentContext:
@@ -108,7 +111,8 @@ class Orchestrator:
 
         try:
             self._git = GitService(project_root)
-            # 自动切换到项目配置指定的分支
+            self._git_unavailable_reason = None
+            # 启动阶段强制校验 Git 仓库与目标分支，失败直接中止执行
             if hasattr(self._context.project, 'git_branch') and self._context.project.git_branch:
                 target_branch = self._context.project.git_branch
                 current_branch = self._git.current_branch()
@@ -116,8 +120,10 @@ class Orchestrator:
                     logger.info(f"切换到分支: {target_branch}")
                     self._git.create_branch(target_branch)
         except GitError as e:
-            logger.warning(f"Git 初始化失败: {e}，跳过 Git 操作")
+            self._git_unavailable_reason = str(e)
             self._git = None
+            logger.error(f"Git 启动校验失败: {e}")
+            raise
 
         # 3. 初始化 LLM 和 Agents
         if self._planner is None:
@@ -157,21 +163,44 @@ class Orchestrator:
         logger.info(f"初始化 {len(tasks)} 个任务")
 
     def resume_tasks(self) -> None:
-        """从持久化状态恢复任务队列"""
+        """从持久化状态恢复任务队列，从最后一个 in-progress 任务继续"""
         assert self._state_store is not None
         assert self._context is not None
 
         if self._state_store.exists():
             tasks = self._state_store.load()
             self._context.task_queue = tasks
+            normalized = self._normalize_generated_subtask_dependencies(tasks)
+            
+            # 找到最后一个 in-progress 任务，将其重置为 pending 以便继续
+            in_progress_tasks = [
+                (i, t) for i, t in enumerate(tasks) 
+                if t.status == TaskStatus.IN_PROGRESS
+            ]
+            
             # 重建 completed_tasks
             self._context.completed_tasks = {
                 t.id: t for t in tasks if t.status == TaskStatus.DONE
             }
-            logger.info(
-                f"恢复 {len(tasks)} 个任务，"
-                f"已完成 {len(self._context.completed_tasks)} 个"
-            )
+            
+            if in_progress_tasks:
+                # 恢复最后一个 in-progress 任务为 pending 状态
+                last_idx, last_task = in_progress_tasks[-1]
+                last_task.status = TaskStatus.PENDING
+                logger.info(
+                    f"恢复 {len(tasks)} 个任务，"
+                    f"已完成 {len(self._context.completed_tasks)} 个，"
+                    f"从任务 {last_task.id} 继续执行"
+                )
+            else:
+                logger.info(
+                    f"恢复 {len(tasks)} 个任务，"
+                    f"已完成 {len(self._context.completed_tasks)} 个"
+                )
+
+            if normalized:
+                logger.info("检测到旧版子任务依赖编号，已自动修复并回写状态文件")
+                self._save_state()
         else:
             logger.info("无状态文件，从初始任务开始")
             self.init_tasks()
@@ -190,6 +219,9 @@ class Orchestrator:
 
             # 同步 LLM 使用量到 context
             self._sync_llm_usage()
+
+            # 检查是否需要上下文压缩（Token 使用率达到 70%）
+            self._check_and_compress_context()
 
             # 检查 token 预算
             if self._config.budget_limit > 0 and self._context.total_tokens_used >= self._config.budget_limit:
@@ -279,6 +311,9 @@ class Orchestrator:
         if iteration >= max_idle:
             print(f"[退出原因] 达到最大空转轮次限制 ({max_idle})")
 
+        # 退出前保存当前对话记录（如果有）
+        self._save_active_conversation_on_exit()
+
         # 输出最终报告
         self._print_report()
 
@@ -298,6 +333,9 @@ class Orchestrator:
         logger.info(f">> 开始任务 {task.id}: {task.title}")
 
         try:
+            # 3.1 设置 MCP 环境（如果任务配置了 MCP 能力）
+            self._setup_mcp_for_task_sync(task)
+
             # 4. 分析阶段
             if task.analysis_cache is None:
                 logger.info(f"  [分析] 分析中...")
@@ -495,10 +533,14 @@ class Orchestrator:
             if not self._config.dry_run:
                 self._revert_changes()
             self._sync_llm_usage()
+            # 异常退出前保存当前对话记录
+            self._save_active_conversation_on_exit()
             self._run_reflection(task)
 
         finally:
             self._context.current_task = None
+            # 清理 MCP 连接
+            self._cleanup_mcp()
             # 无论通过 run() 还是直接 run_single_task() 调用，
             # 任务收敛后都立即落盘，确保下次可从断点恢复。
             self._save_state()
@@ -557,7 +599,7 @@ class Orchestrator:
         return (issues, suggestions)
 
     def _refresh_task_modified_files(self, task: Task, changes: CodeChanges) -> None:
-        """累计记录任务级别的变更文件，并同步到 review_files。"""
+        """累计记录任务级别的变更文件，并始终使用 task.modified_files 作为 review_files。"""
         if not self._context:
             return
 
@@ -580,8 +622,8 @@ class Orchestrator:
 
         task.modified_files = normalized_existing
 
-        if not changes.review_files:
-            changes.review_files = list(task.modified_files)
+        # 始终使用累计修改的文件作为审查范围（忽略 Coder 输出的 review_files）
+        changes.review_files = list(task.modified_files)
 
     def _create_subtasks_from_analysis(self, task: Task) -> int:
         """从分析报告中提取子任务并写入队列。"""
@@ -609,6 +651,8 @@ class Orchestrator:
         existing_ids = {t.id for t in self._context.task_queue}
         created: list[Task] = []
         generated_ids: list[str] = []
+        subtask_specs: list[dict[str, Any]] = []
+        local_dependency_aliases: dict[str, str] = {}
 
         for index, item in enumerate(raw_subtasks, start=1):
             if not isinstance(item, dict):
@@ -627,6 +671,24 @@ class Orchestrator:
                 suffix += 1
                 subtask_id = f"{base_id}_{suffix}"
 
+            positional_alias = f"{task.id}-{index - 1}"
+            local_dependency_aliases[positional_alias] = subtask_id
+            if requested_id:
+                local_dependency_aliases[requested_id] = subtask_id
+            local_dependency_aliases[subtask_id] = subtask_id
+
+            subtask_specs.append({
+                "item": item,
+                "subtask_id": subtask_id,
+                "title": title,
+                "description": description,
+            })
+            existing_ids.add(subtask_id)
+
+        for spec in subtask_specs:
+            item = spec["item"]
+            subtask_id = spec["subtask_id"]
+
             item_priority_raw = item.get("priority")
             item_priority = task.priority - 1
             if isinstance(item_priority_raw, int):
@@ -636,8 +698,11 @@ class Orchestrator:
             inherited_deps = list(task.dependencies)
             item_dependencies_raw = item.get("dependencies", [])
             item_dependencies = [
-                str(dep).strip() for dep in item_dependencies_raw
-                if str(dep).strip()
+                local_dependency_aliases.get(dep_id, dep_id)
+                for dep_id in (
+                    str(dep).strip() for dep in item_dependencies_raw
+                )
+                if dep_id
             ] if isinstance(item_dependencies_raw, list) else []
             merged_dependencies = [
                 dep for dep in (inherited_deps + item_dependencies)
@@ -647,8 +712,8 @@ class Orchestrator:
 
             subtask = Task(
                 id=subtask_id,
-                title=title,
-                description=description,
+                title=spec["title"],
+                description=spec["description"],
                 dependencies=merged_dependencies,
                 priority=item_priority,
                 phase=task.phase,
@@ -657,7 +722,6 @@ class Orchestrator:
             )
             created.append(subtask)
             generated_ids.append(subtask_id)
-            existing_ids.add(subtask_id)
 
         task.analysis_subtasks_generated = True
         if not created:
@@ -995,7 +1059,7 @@ class Orchestrator:
         """创建 LLM 服务实例"""
         api_key = self._config.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY", "")
         base_url = self._config.anthropic_base_url or os.environ.get("ANTHROPIC_BASE_URL", "")
-        return LLMService(
+        llm = LLMService(
             api_key=api_key,
             model=self._config.model,
             max_tokens=self._config.max_tokens,
@@ -1003,7 +1067,16 @@ class Orchestrator:
             base_url=base_url,
             timeout=self._config.llm_timeout,
             max_retries=self._config.llm_max_retries,
+            summary_trigger_bytes=self._config.summary_trigger_bytes,
+            summary_trigger_message_count=self._config.summary_trigger_message_count,
+            summary_keep_recent_messages=self._config.summary_keep_recent_messages,
+            summary_keep_recent_log_entries=self._config.summary_keep_recent_log_entries,
+            summary_min_new_messages_after_summary=self._config.summary_min_new_messages_after_summary,
         )
+        # 传递缓存配置到 LLM 服务
+        llm._cache_min_tokens = self._config.cache_min_tokens
+        llm._enable_cache = self._config.enable_llm_cache
+        return llm
 
     def _save_state(self) -> None:
         """持久化当前任务队列状态"""
@@ -1039,7 +1112,11 @@ class Orchestrator:
             commit hash 或 None
         """
         if not self._git:
-            logger.warning("  [git] 跳过提交: GitService 未初始化")
+            reason_suffix = (
+                f" ({self._git_unavailable_reason})"
+                if self._git_unavailable_reason else ""
+            )
+            logger.warning(f"  [git] 跳过提交: GitService 未初始化{reason_suffix}")
             return None
         if not self._config.git_auto_commit:
             logger.info("  [git] 跳过提交: git_auto_commit=False")
@@ -1167,6 +1244,174 @@ class Orchestrator:
             return None
         return self._conversation_logger.start(task.id, agent_name)
 
+
+
+    def _check_and_compress_context(self) -> None:
+        """检查 Token 使用率，达到阈值时触发上下文压缩"""
+        if self._llm is None or self._conversation_logger is None:
+            return
+
+        context_window = self._config.model_context_window
+        threshold = self._config.context_compress_threshold
+        target_budget = int(context_window * threshold)
+
+        # 检查当前对话的 token 使用
+        conv_log = self._conversation_logger.active_log
+        if conv_log is None:
+            return
+
+        current_tokens = (
+            conv_log.token_usage.get("input_tokens", 0) +
+            conv_log.token_usage.get("output_tokens", 0)
+        )
+
+        # 估算当前对话占用的 token（简单估算：当前 tokens + 历史对话 tokens）
+        # 这里使用当前对话的 token 使用量作为参考
+        if current_tokens >= target_budget:
+            logger.warning(
+                f"[Token 压缩] 当前对话 Token 使用 ({current_tokens}) 达到阈值 "
+                f"({target_budget} = {context_window} * {threshold})，触发压缩"
+            )
+            self._llm.compress_context(
+                conv_log,
+                label=f"Compress/{self._context.current_task.id if self._context.current_task else 'N/A'}",
+            )
+
+
+    async def _setup_mcp_for_task(self, task: Task) -> None:
+        """为当前任务设置 MCP 环境
+
+        Args:
+            task: 当前任务
+        """
+        enabled, servers = self._resolve_mcp_runtime_config(task)
+
+        if not enabled:
+            return
+
+        logger.info(f"  [MCP] 任务 {task.id} 启用了 MCP 能力")
+        
+        if not servers:
+            logger.info(f"  [MCP] 未配置必需的 Server，跳过连接")
+            return
+
+        try:
+            self._mcp_client = MCPClient()
+            
+            # 连接配置的 Server
+            connected_count = 0
+            for server in servers:
+                logger.info(f"  [MCP] 连接 Server: {server.name}")
+                self._mcp_client.register_server(server)
+                if await self._mcp_client.connect_to_server(server.name):
+                    connected_count += 1
+            
+            if connected_count > 0:
+                # 获取 MCP 工具并注册到 LLM
+                mcp_tools = self._mcp_client.get_available_tools()
+                if mcp_tools:
+                    logger.info(f"  [MCP] 发现 {len(mcp_tools)} 个 MCP 工具")
+                    # 将 MCP 工具注册到 LLM（需要 LLMService 支持）
+                    if self._llm:
+                        self._llm.register_extra_tools(mcp_tools)
+                else:
+                    logger.warning(f"  [MCP] 未发现可用工具")
+            else:
+                logger.warning(f"  [MCP] 未能连接到任何 Server")
+                
+        except Exception as e:
+            logger.error(f"  [MCP] 设置失败：{e}")
+            self._mcp_client = None
+
+    def _resolve_mcp_runtime_config(self, task: Task) -> tuple[bool, list[MCPServerConfig]]:
+        """解析任务级与项目级 MCP 配置，得到最终运行时配置。"""
+        assert self._context is not None
+
+        has_task_servers = bool(task.mcp_config.required_servers)
+        has_task_selection = any([
+            task.mcp_config.enabled,
+            has_task_servers,
+            bool(task.mcp_config.required_tools),
+            bool(task.mcp_config.optional_tools),
+            bool(task.mcp_config.reasoning.strip()),
+        ])
+
+        if task.mcp_config.enabled:
+            selected_servers = task.mcp_config.required_servers or self._context.project.mcp_servers
+            return bool(selected_servers), [self._to_mcp_server_config(server) for server in selected_servers]
+
+        if not has_task_selection and self._context.project.mcp_default_enabled:
+            return bool(self._context.project.mcp_servers), [
+                self._to_mcp_server_config(server)
+                for server in self._context.project.mcp_servers
+            ]
+
+        return False, []
+
+    def _to_mcp_server_config(self, server: Any) -> MCPServerConfig:
+        if isinstance(server, MCPServerConfig):
+            return server
+        return MCPServerConfig(
+            name=server.name,
+            command=server.command,
+            args=list(server.args),
+            transport=server.transport,
+            url=server.url,
+            env=dict(server.env),
+        )
+
+    def _setup_mcp_for_task_sync(self, task: Task) -> None:
+        """同步版本的 MCP 设置（用于非异步上下文）
+
+        Args:
+            task: 当前任务
+        """
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        if loop.is_running():
+            # 在运行中的事件循环中，创建任务但不等待
+            asyncio.ensure_future(self._setup_mcp_for_task(task))
+        else:
+            loop.run_until_complete(self._setup_mcp_for_task(task))
+
+    def _cleanup_mcp(self) -> None:
+        """清理 MCP 连接"""
+        # 检查是否有 _mcp_client 属性（测试可能没有初始化）
+        if not hasattr(self, '_mcp_client') or self._mcp_client is None:
+            return
+        
+        if self._mcp_client is not None:
+            try:
+                # 异步清理
+                import asyncio
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.ensure_future(self._mcp_client.disconnect())
+                    else:
+                        loop.run_until_complete(self._mcp_client.disconnect())
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(self._mcp_client.disconnect())
+            except Exception as e:
+                logger.warning(f"  [MCP] 清理失败：{e}")
+            finally:
+                self._mcp_client = None
+
+    def _save_active_conversation_on_exit(self) -> None:
+        """退出时保存当前活跃的对话记录（异常退出保护）"""
+        if self._conversation_logger is None:
+            return
+        filepath = self._conversation_logger.save_active_log_now()
+        if filepath:
+            logger.info(f"[退出保护] 对话日志已保存：{filepath}")
+
     def _save_conversation(self) -> None:
         """保存当前对话日志"""
         if self._conversation_logger is None:
@@ -1174,6 +1419,39 @@ class Orchestrator:
         filepath = self._conversation_logger.finish_and_save()
         if filepath:
             logger.info(f"    [对话] 已保存: {filepath}")
+
+    def _normalize_generated_subtask_dependencies(self, tasks: list[Task]) -> bool:
+        """兼容旧状态文件中的子任务本地依赖编号。"""
+        alias_map: dict[str, str] = {}
+
+        for task in tasks:
+            if task.created_by != "planner" or ".S" not in task.id:
+                continue
+            parent_id, suffix = task.id.rsplit(".S", 1)
+            if not suffix.isdigit():
+                continue
+            alias_map[f"{parent_id}-{int(suffix) - 1}"] = task.id
+
+        changed = False
+        for task in tasks:
+            if not task.dependencies:
+                continue
+
+            normalized_dependencies = [
+                alias_map.get(dep_id, dep_id)
+                for dep_id in task.dependencies
+            ]
+            normalized_dependencies = [
+                dep_id for dep_id in normalized_dependencies
+                if dep_id and dep_id != task.id
+            ]
+            normalized_dependencies = list(dict.fromkeys(normalized_dependencies))
+
+            if normalized_dependencies != task.dependencies:
+                task.dependencies = normalized_dependencies
+                changed = True
+
+        return changed
 
     def _try_unlock_blocked(self) -> bool:
         """尝试解锁 blocked 任务"""

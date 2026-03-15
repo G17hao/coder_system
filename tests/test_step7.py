@@ -19,6 +19,7 @@ from agent_system.models.context import AgentConfig, AgentContext
 from agent_system.models.project_config import ProjectConfig
 from agent_system.models.task import ReviewResult, Task, TaskStatus
 from agent_system.orchestrator import Orchestrator
+from agent_system.services.git_service import GitError
 from agent_system.services.state_store import StateStore
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -178,6 +179,40 @@ class TestOrchestratorMainLoop:
         assert next_task is not None
         assert next_task.id == generated[0].id
 
+    def test_analysis_subtask_dependencies_are_mapped_to_generated_ids(self) -> None:
+        """分析报告中的局部依赖编号应映射到真实生成的子任务 ID"""
+        analyst_report = (
+            '{"interfaces": [], "subtasks": ['
+            '{"title": "定义事件", "description": "先补事件枚举"},'
+            '{"title": "扩展模型", "description": "依赖第一个子任务", "dependencies": ["T0-0"]},'
+            '{"title": "桥接服务", "description": "依赖前两个子任务", "dependencies": ["T0-0", "T0-1"]}'
+            ']}'
+        )
+        planner, analyst, coder, reviewer = _make_mock_agents(analyst_report=analyst_report)
+
+        parent = Task(id="T0", title="Parent", description="parent desc", priority=10)
+        ctx = _make_context([parent], dry_run=False)
+
+        orch = Orchestrator(
+            config=ctx.config,
+            planner=planner,
+            analyst=analyst,
+            coder=coder,
+            reviewer=reviewer,
+            context=ctx,
+        )
+        orch._state_store = StateStore(Path(tempfile.mktemp(suffix=".json")))
+        orch._file_service = MagicMock()
+        orch._git = MagicMock()
+        orch._git.has_changes.return_value = False
+
+        orch.run_single_task(parent)
+
+        generated = {t.id: t for t in ctx.task_queue if t.id.startswith("T0.S")}
+        assert list(generated.keys()) == ["T0.S1", "T0.S2", "T0.S3"]
+        assert generated["T0.S2"].dependencies == ["T0.S1"]
+        assert generated["T0.S3"].dependencies == ["T0.S1", "T0.S2"]
+
     def test_subtask_should_not_generate_nested_subtasks(self) -> None:
         """子任务（created_by=planner）不应继续拆分新的子任务"""
         analyst_report = (
@@ -213,6 +248,72 @@ class TestOrchestratorMainLoop:
         nested = [t for t in ctx.task_queue if t.id.startswith("T0.S1.S")]
         assert len(nested) == 0
         assert subtask.status == TaskStatus.DONE
+
+    def test_resume_normalizes_legacy_subtask_dependencies(self) -> None:
+        """恢复旧状态时应自动修复 parent-0 形式的子任务依赖"""
+        planner, analyst, coder, reviewer = _make_mock_agents()
+        tasks = [
+            Task(id="T0", title="Parent", description="parent", dependencies=["T0.S2"]),
+            Task(id="T0.S1", title="First", description="first", status=TaskStatus.DONE, created_by="planner"),
+            Task(id="T0.S2", title="Second", description="second", dependencies=["T0-0"], created_by="planner"),
+        ]
+        ctx = _make_context([], dry_run=False)
+
+        orch = Orchestrator(
+            config=ctx.config,
+            planner=planner,
+            analyst=analyst,
+            coder=coder,
+            reviewer=reviewer,
+            context=ctx,
+        )
+        state_path = Path(tempfile.mktemp(suffix=".json"))
+        orch._state_store = StateStore(state_path)
+        orch._state_store.save(tasks)
+
+        orch.resume_tasks()
+
+        repaired = {task.id: task for task in orch.context.task_queue}
+        assert repaired["T0.S2"].dependencies == ["T0.S1"]
+
+    def test_initialize_fails_when_branch_switch_fails(self, tmp_path: Path) -> None:
+        """启动阶段 Git 校验失败时应直接中止执行"""
+        planner, analyst, coder, reviewer = _make_mock_agents()
+        project_root = tmp_path / "repo"
+        project_root.mkdir()
+        ctx = AgentContext(
+            project=ProjectConfig(
+                project_name="test",
+                project_description="test",
+                project_root=str(project_root),
+                git_branch="feat/test-branch",
+                review_commands=[],
+            ),
+            task_queue=[],
+            config=AgentConfig(dry_run=False, git_auto_commit=True),
+        )
+
+        orch = Orchestrator(
+            config=ctx.config,
+            planner=planner,
+            analyst=analyst,
+            coder=coder,
+            reviewer=reviewer,
+            context=ctx,
+        )
+
+        mock_git = MagicMock()
+        mock_git.current_branch.return_value = "main"
+        mock_git.create_branch.side_effect = GitError("dirty worktree")
+
+        with patch("agent_system.orchestrator.GitService", return_value=mock_git):
+            with pytest.raises(GitError, match="dirty worktree"):
+                orch.initialize()
+
+        assert orch._git is None
+        assert orch._git_unavailable_reason == "dirty worktree"
+        mock_git.current_branch.assert_called_once()
+        mock_git.create_branch.assert_called_once_with("feat/test-branch")
 
 
 class TestRetryLogic:

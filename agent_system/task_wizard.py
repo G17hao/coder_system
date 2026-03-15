@@ -7,6 +7,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from agent_system.models.project_config import ProjectConfig
+
 
 @dataclass
 class WizardTask:
@@ -16,6 +18,8 @@ class WizardTask:
     title: str
     description: str
     priority: int
+    phase: int = 0
+    category: str = ""
     dependencies: list[str] = field(default_factory=list)
 
 
@@ -28,6 +32,7 @@ class WizardResult:
     scope_out: str
     constraints: str
     tasks: list[WizardTask]
+    project_name: str = ""
 
 
 def _ask_non_empty(prompt: str) -> str:
@@ -58,6 +63,53 @@ def _ask_priority(default: int = 2) -> int:
         print("  输入无效，请输入 0~3 的整数。")
 
 
+def _ask_phase(default: int = 0) -> int:
+    """读取阶段编号"""
+    while True:
+        raw = input(f"  阶段 phase（非负整数，默认{default}）: ").strip()
+        if not raw:
+            return default
+        if raw.isdigit():
+            return int(raw)
+        print("  输入无效，请输入非负整数。")
+
+
+def _ask_category(categories: list[str]) -> str:
+    """读取任务分类"""
+    if not categories:
+        return ""
+    print("  可选分类:")
+    for idx, category in enumerate(categories, 1):
+        print(f"    {idx}) {category}")
+
+    while True:
+        raw = input("  分类（输入序号或名称，留空表示无分类）: ").strip()
+        if not raw:
+            return ""
+        if raw.isdigit():
+            index = int(raw) - 1
+            if 0 <= index < len(categories):
+                return categories[index]
+        if raw in categories:
+            return raw
+        print("  输入无效，请从可选分类中选择。")
+
+
+def _print_project_context(project: ProjectConfig) -> None:
+    """输出项目上下文，帮助任务拆分保持项目特性但不污染通用系统"""
+    print("\n[项目上下文]")
+    print(f"- 项目: {project.project_name}")
+    print(f"- 描述: {project.project_description}")
+    if project.task_categories:
+        print(f"- 任务分类: {', '.join(project.task_categories)}")
+
+    prompt_overrides = project.prompt_overrides or {}
+    wizard_prompt = str(prompt_overrides.get("task_wizard", "")).strip()
+    if wizard_prompt:
+        print("- 项目特定拆分约束:")
+        print(wizard_prompt)
+
+
 def _ask_dependencies(existing_ids: list[str]) -> list[str]:
     """读取依赖任务 ID 列表"""
     if not existing_ids:
@@ -73,6 +125,8 @@ def _render_preview(result: WizardResult) -> str:
     """渲染任务预览文本"""
     lines: list[str] = []
     lines.append("\n=== 任务列表草案 ===")
+    if result.project_name:
+        lines.append(f"项目: {result.project_name}")
     lines.append(f"目标: {result.goal}")
     lines.append(f"范围(包含): {result.scope_in}")
     lines.append(f"范围(不含): {result.scope_out}")
@@ -81,15 +135,18 @@ def _render_preview(result: WizardResult) -> str:
     for task in result.tasks:
         deps = ", ".join(task.dependencies) if task.dependencies else "无"
         lines.append(
-            f"- {task.id} | P{task.priority} | {task.title} | 依赖: {deps}\n"
+            f"- {task.id} | P{task.priority} | Phase {task.phase} | "
+            f"{task.category or '未分类'} | {task.title} | 依赖: {deps}\n"
             f"  {task.description}"
         )
     return "\n".join(lines)
 
 
-def _build_result() -> WizardResult:
+def _build_result(project: ProjectConfig | None = None) -> WizardResult:
     """对话构建任务列表"""
     print("\n[任务助手] 进入任务列表创建向导（输入 q 可随时退出）")
+    if project is not None:
+        _print_project_context(project)
 
     goal = _ask_non_empty("1) 这次要达成的目标是: ")
     if goal.lower() == "q":
@@ -107,7 +164,11 @@ def _build_result() -> WizardResult:
     if constraints.lower() == "q":
         raise KeyboardInterrupt
 
-    task_count_raw = _ask_optional("5) 先创建多少条任务（默认 5）: ", default="5")
+    default_task_count = "5"
+    task_count_raw = _ask_optional(
+        f"5) 先创建多少条任务（默认 {default_task_count}）: ",
+        default=default_task_count,
+    )
     if task_count_raw.lower() == "q":
         raise KeyboardInterrupt
     task_count = 5
@@ -115,6 +176,7 @@ def _build_result() -> WizardResult:
         task_count = int(task_count_raw)
 
     tasks: list[WizardTask] = []
+    categories = project.task_categories if project is not None else []
     for idx in range(1, task_count + 1):
         task_id = f"T{idx}"
         print(f"\n- 创建任务 {task_id}")
@@ -125,6 +187,8 @@ def _build_result() -> WizardResult:
         if description.lower() == "q":
             raise KeyboardInterrupt
         priority = _ask_priority(default=2)
+        phase = _ask_phase(default=0)
+        category = _ask_category(categories)
         deps = _ask_dependencies([task.id for task in tasks])
         tasks.append(
             WizardTask(
@@ -132,6 +196,8 @@ def _build_result() -> WizardResult:
                 title=title,
                 description=description,
                 priority=priority,
+                phase=phase,
+                category=category,
                 dependencies=deps,
             )
         )
@@ -141,6 +207,7 @@ def _build_result() -> WizardResult:
         scope_in=scope_in,
         scope_out=scope_out,
         constraints=constraints,
+        project_name=project.project_name if project is not None else "",
         tasks=tasks,
     )
 
@@ -159,6 +226,7 @@ def _save_result(result: WizardResult) -> Path:
 
     payload = {
         "created_at": datetime.now().isoformat(timespec="seconds"),
+        "project_name": result.project_name,
         "goal": result.goal,
         "scope_in": result.scope_in,
         "scope_out": result.scope_out,
@@ -172,10 +240,13 @@ def _save_result(result: WizardResult) -> Path:
     return target_path
 
 
-def run_task_wizard() -> int:
+def run_task_wizard(project_config_file: str = "") -> int:
     """运行任务列表对话向导"""
     try:
-        result = _build_result()
+        project: ProjectConfig | None = None
+        if project_config_file.strip():
+            project = ProjectConfig.from_file(project_config_file)
+        result = _build_result(project=project)
         print(_render_preview(result))
         confirm = _ask_optional("\n确认保存任务列表？(Y/n): ", default="y").lower()
         if confirm not in ("y", "yes"):

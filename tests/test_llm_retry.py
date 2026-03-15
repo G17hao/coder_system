@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from agent_system.services.conversation_logger import ConversationLog
+
 
 class _FakeConnError(Exception):
     """用于替代 anthropic.APIConnectionError 的测试异常"""
@@ -84,6 +86,11 @@ def _make_service(client: object):
     return service
 
 
+class _DummyToolExecutor:
+    def execute(self, name: str, tool_input: dict[str, object]) -> str:
+        return "ok"
+
+
 def test_backoff_doubles_until_two_minutes_and_keeps_capped(monkeypatch) -> None:
     """重试间隔按 10s 翻倍，达到 120s 后保持不变"""
     from agent_system.services import llm as llm_module
@@ -134,3 +141,190 @@ def test_estimate_request_payload_contains_size_metrics() -> None:
     assert payload["tool_count"] == 1
     assert payload["message_chars"] >= 10
     assert payload["payload_bytes"] > 0
+
+
+def test_tools_loop_done_reflection_triggers_finalization(monkeypatch) -> None:
+    """软限制触发 DONE 时，应再补一次无工具收尾调用，避免返回过程性文本"""
+    from agent_system.services.llm import LLMResponse, TokenUsage
+    from agent_system.services.llm import LLMService
+
+    service = object.__new__(LLMService)
+    service._usage = TokenUsage()
+
+    responses = [
+        LLMResponse(
+            content="发现魔术字符串，继续检查 new 依赖",
+            tool_calls=[{"id": "tool-1", "name": "grep_content", "input": {"path": "a.ts"}}],
+        ),
+        LLMResponse(content="DONE: 已完成所有审查"),
+        LLMResponse(content='{"passed": false, "issues": ["magic string"], "suggestions": [], "context_for_coder": ""}'),
+    ]
+
+    def _fake_call(system_prompt, messages, tools=None, conversation_log=None, label="", enable_cache=True):
+        return responses.pop(0)
+
+    service.call = _fake_call  # type: ignore[method-assign]
+
+    result = service.call_with_tools_loop(
+        system_prompt="reviewer prompt",
+        messages=[{"role": "user", "content": "review this"}],
+        tools=[{"name": "grep_content"}],
+        tool_executor=_DummyToolExecutor(),
+        max_iterations=5,
+        soft_limit=1,
+        conversation_log=None,
+        label="Reviewer/T1.7",
+    )
+
+    assert result.content.startswith('{"passed": false')
+
+
+def test_fit_messages_to_payload_trims_large_tool_results() -> None:
+    """请求体过大时应优先裁剪旧的 tool_result 内容，而不是直接把请求打到 413。"""
+    from agent_system.services.llm import _fit_messages_to_payload
+
+    huge_tool_result = "X" * 20000
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tool-1",
+                    "content": huge_tool_result,
+                }
+            ],
+        },
+        {"role": "assistant", "content": "final answer"},
+    ]
+
+    fitted_messages, payload, was_trimmed = _fit_messages_to_payload(
+        system_prompt="review prompt",
+        messages=messages,
+        tools=None,
+        max_bytes=5000,
+    )
+
+    assert was_trimmed is True
+    assert payload["payload_bytes"] <= 5000
+    trimmed_content = fitted_messages[0]["content"][0]["content"]
+    assert len(trimmed_content) < len(huge_tool_result)
+
+
+def test_tools_loop_summarizes_old_messages_into_system_prompt() -> None:
+    """工具循环达到阈值时，应先做滚动摘要，再用摘要后的 system prompt 发起正式请求。"""
+    from agent_system.services.llm import LLMResponse, TokenUsage
+    from agent_system.services.llm import LLMService
+
+    service = object.__new__(LLMService)
+    service._usage = TokenUsage()
+
+    captured_calls: list[dict[str, object]] = []
+
+    def _fake_call(system_prompt, messages, tools=None, conversation_log=None, label="", enable_cache=True):
+        captured_calls.append({
+            "system_prompt": system_prompt,
+            "messages": messages,
+            "tools": tools,
+            "label": label,
+        })
+        if str(label).endswith("/摘要"):
+            return LLMResponse(content="任务是修复审查问题，已读多个文件，确认关键风险在 magic string，后续只需给出最终结论。")
+        return LLMResponse(content="final answer", tool_calls=[])
+
+    service.call = _fake_call  # type: ignore[method-assign]
+
+    messages = [
+        {"role": "user", "content": f"message-{index}"}
+        for index in range(26)
+    ]
+
+    result = service.call_with_tools_loop(
+        system_prompt="reviewer prompt",
+        messages=messages,
+        tools=[{"name": "read_file"}],
+        tool_executor=_DummyToolExecutor(),
+        max_iterations=3,
+        soft_limit=30,
+        conversation_log=None,
+        label="Reviewer/T9.1",
+    )
+
+    assert result.content == "final answer"
+    assert len(captured_calls) == 2
+    assert str(captured_calls[0]["label"]).endswith("/摘要")
+    assert "[CONTEXT SUMMARY START]" in str(captured_calls[1]["system_prompt"])
+    assert len(captured_calls[1]["messages"]) < len(messages)
+
+
+def test_tools_loop_summary_updates_conversation_log() -> None:
+    """滚动摘要后，对话日志也应同步为摘要 + 最近消息，而不是保留整段旧历史。"""
+    from agent_system.services.llm import LLMResponse, TokenUsage
+    from agent_system.services.llm import LLMService
+
+    service = object.__new__(LLMService)
+    service._usage = TokenUsage()
+
+    def _fake_call(system_prompt, messages, tools=None, conversation_log=None, label="", enable_cache=True):
+        if str(label).endswith("/摘要"):
+            return LLMResponse(content="已完成历史对话压缩，保留任务目标、关键文件和未解决问题。")
+        return LLMResponse(content="done", tool_calls=[])
+
+    service.call = _fake_call  # type: ignore[method-assign]
+
+    log = ConversationLog(task_id="T-1", agent_name="reviewer")
+    initial_messages = [
+        {"role": "user", "content": f"user-{index}"}
+        for index in range(25)
+    ]
+
+    service.call_with_tools_loop(
+        system_prompt="reviewer prompt",
+        messages=initial_messages,
+        tools=[{"name": "read_file"}],
+        tool_executor=_DummyToolExecutor(),
+        max_iterations=2,
+        soft_limit=30,
+        conversation_log=log,
+        label="Reviewer/T9.2",
+    )
+
+    assert log.entries[0].role == "system"
+    assert str(log.entries[0].content).startswith("[对话摘要]")
+    assert len(log.entries) < len(initial_messages) + 1
+
+
+def test_tools_loop_does_not_summarize_small_history() -> None:
+    """轻量历史对话不应触发滚动摘要，避免摘要过于频繁。"""
+    from agent_system.services.llm import LLMResponse, TokenUsage
+    from agent_system.services.llm import LLMService
+
+    service = object.__new__(LLMService)
+    service._usage = TokenUsage()
+
+    captured_labels: list[str] = []
+
+    def _fake_call(system_prompt, messages, tools=None, conversation_log=None, label="", enable_cache=True):
+        captured_labels.append(str(label))
+        return LLMResponse(content="final answer", tool_calls=[])
+
+    service.call = _fake_call  # type: ignore[method-assign]
+
+    messages = [
+        {"role": "user", "content": f"message-{index}"}
+        for index in range(14)
+    ]
+
+    result = service.call_with_tools_loop(
+        system_prompt="reviewer prompt",
+        messages=messages,
+        tools=[{"name": "read_file"}],
+        tool_executor=_DummyToolExecutor(),
+        max_iterations=3,
+        soft_limit=30,
+        conversation_log=None,
+        label="Reviewer/T9.3",
+    )
+
+    assert result.content == "final answer"
+    assert captured_labels == ["Reviewer/T9.3"]

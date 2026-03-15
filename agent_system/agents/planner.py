@@ -9,6 +9,7 @@ from typing import Any
 from agent_system.agents.base import BaseAgent
 from agent_system.models.context import AgentContext
 from agent_system.models.task import Task, TaskStatus
+from agent_system.models.mcp_config import MCPCapabilityConfig, MCPServerRef
 
 
 class DependencyStatus(str, Enum):
@@ -196,6 +197,126 @@ class Planner(BaseAgent):
             "taskCategories": json.dumps(context.project.task_categories, ensure_ascii=False),
             "projectSpecificPrompt": project_specific_prompt or "无",
         })
+
+    def configure_mcp_capability(
+        self,
+        task: Task,
+        context: AgentContext,
+    ) -> MCPCapabilityConfig:
+        """为任务配置 MCP 能力
+
+        使用 LLM 分析任务需求，思考需要哪些 MCP Server 和工具。
+
+        Args:
+            task: 任务
+            context: Agent 上下文
+
+        Returns:
+            MCP 能力配置
+        """
+        system_prompt = self._build_mcp_config_prompt(context)
+        
+        user_message = (
+            f"请分析以下任务，思考是否需要使用 MCP (Model Context Protocol) 能力：\n\n"
+            f"**任务 ID**: {task.id}\n"
+            f"**任务标题**: {task.title}\n"
+            f"**任务描述**: {task.description}\n\n"
+            f"## MCP 能力说明\n\n"
+            f"MCP 允许你调用外部 Server 提供的工具，例如：\n"
+            f"- 数据库查询工具（查询 MySQL、PostgreSQL 等）\n"
+            f"- API 调用工具（调用 RESTful API、GraphQL 等）\n"
+            f"- 云服务工具（AWS、Azure、阿里云等）\n"
+            f"- 第三方服务工具（GitHub、Slack、Notion 等）\n"
+            f"- 本地工具（文件操作、命令执行等，已内置）\n\n"
+            f"## 输出格式\n\n"
+            f"请输出 JSON 格式的 MCP 配置：\n"
+            f'{{\n'
+            f'  "enabled": true/false,\n'
+            f'  "reasoning": "说明为什么需要或不需要 MCP 能力",\n'
+            f'  "required_servers": [\n'
+            f'    {{"name": "server-name", "transport": "streamable-http", "url": "http://127.0.0.1:23000/mcp", "description": "Server 描述"}}\n'
+            f'  ],\n'
+            f'  "required_tools": ["tool-name-1", "tool-name-2"],\n'
+            f'  "optional_tools": ["optional-tool-name"]\n'
+            f'}}\n\n'
+            f"## 判断标准\n\n"
+            f"- 如果任务只涉及本地文件操作、命令执行，使用内置工具即可，不需要 MCP\n"
+            f"- 如果任务需要访问外部 API、数据库、云服务，建议启用 MCP\n"
+            f"- 如果项目已配置默认 MCP 且任务没有明确禁止，优先复用项目级 MCP Server\n"
+            f"- 如果不确定，可以启用 MCP 并在 reasoning 中说明"
+        )
+
+        response = self._llm.call(
+            system_prompt=system_prompt,
+            messages=[{"role": "user", "content": user_message}],
+        )
+
+        return self._parse_mcp_config(response.content)
+
+    def _build_mcp_config_prompt(self, context: AgentContext) -> str:
+        """构建 MCP 配置的系统提示词"""
+        available_servers = [server.to_dict() for server in context.project.mcp_servers]
+        return (
+            "你是一个任务规划专家，擅长分析任务需求并配置合适的 MCP (Model Context Protocol) 能力。\n\n"
+            "你的职责：\n"
+            "1. 分析任务描述，判断是否需要外部工具支持\n"
+            "2. 如果需要，推荐合适的 MCP Server 和工具\n"
+            "3. 输出 JSON 格式的 MCP 配置\n\n"
+            "可用内置工具（无需 MCP）：\n"
+            "- read_file, write_file, list_directory, search_file\n"
+            "- grep_content, diff_file, run_command, ts_check\n"
+            "- get_project_structure, list_todo_items\n\n"
+            f"项目已配置的 MCP Servers（优先从这里选，不要凭空发明新的 Server）：\n{json.dumps(available_servers, ensure_ascii=False, indent=2)}\n\n"
+            f"项目级默认启用 MCP：{json.dumps(context.project.mcp_default_enabled, ensure_ascii=False)}\n\n"
+            "输出要求：\n"
+            "- reasoning 字段必须清晰说明判断依据\n"
+            "- required_servers 只能从项目已配置的 MCP Servers 中选择\n"
+            "- required_servers 中保留 transport/url/command/args 等原始字段，不要自行删改\n"
+            "- required_tools 列出必须使用的工具\n"
+            "- optional_tools 列出可选工具"
+        )
+
+    def _parse_mcp_config(self, content: str) -> MCPCapabilityConfig:
+        """解析 LLM 输出的 MCP 配置 JSON
+
+        Args:
+            content: LLM 输出内容
+
+        Returns:
+            MCPCapabilityConfig 实例
+        """
+        try:
+            # 尝试提取 JSON
+            import re
+            code_block_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
+            if code_block_match:
+                json_str = code_block_match.group(1)
+            else:
+                start = content.find("{")
+                end = content.rfind("}") + 1
+                json_str = content[start:end] if start != -1 else "{}"
+
+            data = json.loads(json_str)
+
+            servers = [
+                MCPServerRef.from_dict(s)
+                for s in data.get("required_servers", [])
+            ]
+
+            return MCPCapabilityConfig(
+                enabled=data.get("enabled", False),
+                required_servers=servers,
+                required_tools=data.get("required_tools", []),
+                optional_tools=data.get("optional_tools", []),
+                reasoning=data.get("reasoning", ""),
+            )
+
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            # 解析失败时返回默认配置
+            return MCPCapabilityConfig(
+                enabled=False,
+                reasoning=f"MCP 配置解析失败：{e}",
+            )
 
     def _parse_generated_tasks(self, content: str, limit: int) -> list[Task]:
         """解析 LLM 生成的任务 JSON

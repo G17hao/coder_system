@@ -96,12 +96,14 @@ class CoderToolExecutor:
         self,
         allowed_roots: list[str] | None = None,
         default_base_dir: str | None = None,
+        mcp_client: MCPClient | None = None,
     ) -> None:
         # path → {"content": str, "action": "create"|"modify"}
         self._tracked_writes: dict[str, dict[str, str]] = {}
         # TODO 列表状态（跨工具调用持久）
         self._todo_items: list[dict[str, Any]] = []
         self._guard = PathGuard(allowed_roots=allowed_roots, default_base_dir=default_base_dir)
+        self._mcp_client = mcp_client
 
     _DANGEROUS_COMMAND_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         (re.compile(r"(^|[;&|])\s*rm\s+", re.IGNORECASE), "检测到 rm 删除命令"),
@@ -133,10 +135,48 @@ class CoderToolExecutor:
         ]
 
     def execute(self, name: str, tool_input: dict[str, Any]) -> str:
+        # MCP 工具调用优先
+        if self._mcp_client and name in self._mcp_client.get_tool_names():
+            return self._call_mcp_tool(name, tool_input)
+        
+        # 使用本地工具
         try:
             return self._dispatch(name, tool_input)
         except Exception as e:
+            return f"错误：工具 {name} 执行异常：{type(e).__name__}: {e}"
             return f"错误: 工具 {name} 执行异常: {type(e).__name__}: {e}"
+
+
+    def _call_mcp_tool(self, name: str, tool_input: dict[str, Any]) -> str:
+        """调用 MCP 工具
+
+        Args:
+            name: 工具名称
+            tool_input: 工具参数
+
+        Returns:
+            工具执行结果
+        """
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        if loop.is_running():
+            future = asyncio.ensure_future(self._mcp_client.call_tool(name, tool_input))
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                result_future = asyncio.run_coroutine_threadsafe(future, loop)
+                result = result_future.result(timeout=60)
+        else:
+            result = loop.run_until_complete(self._mcp_client.call_tool(name, tool_input))
+        
+        if result.success:
+            return result.content
+        else:
+            return f"MCP 工具调用失败：{result.error}"
 
     def _dispatch(self, name: str, tool_input: dict[str, Any]) -> str:
         """分发工具调用到具体实现"""
@@ -421,6 +461,17 @@ class Coder(BaseAgent):
         commands_text = ""
         if hasattr(project, "review_commands"):
             commands_text = json.dumps(project.review_commands, ensure_ascii=False)
+        
+        project_root = getattr(project, "project_root", "")
+        conventions_file = str(getattr(project, "conventions_file", "")).strip()
+        project_common_prompt = "无"
+        conventions_file_label = conventions_file or "无"
+        if conventions_file:
+            file_path = Path(conventions_file)
+            if not file_path.is_absolute():
+                file_path = Path(project_root) / file_path
+            if file_path.exists():
+                project_common_prompt = file_path.read_text(encoding="utf-8")
 
         conventions = getattr(project, "coding_conventions", "")
 
@@ -436,6 +487,8 @@ class Coder(BaseAgent):
             "reviewCommands": commands_text or "无",
             "completedTasks": completed_text or "无（首个任务）",
             "projectSpecificPrompt": project_specific_prompt or "无",
+            "projectCommonPrompt": project_common_prompt or "无",
+            "conventionsFile": conventions_file_label,
         })
 
     @staticmethod
