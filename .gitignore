@@ -18,3 +18,4 @@ logs/*.log
 projects/
 run.bat
 node_modules/
+task_output.json
