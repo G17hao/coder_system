@@ -54,6 +54,7 @@ class Task:
     category: str = ""
     created_by: Literal["initial", "planner"] = "initial"
     analysis_cache: str | None = None
+    analysis_handoff: str | None = None
     coder_output: str | None = None
     review_result: ReviewResult | None = None
     retry_count: int = 0
@@ -97,6 +98,7 @@ class Task:
             category=data.get("category", ""),
             created_by=data.get("created_by", "initial"),
             analysis_cache=data.get("analysis_cache"),
+            analysis_handoff=data.get("analysis_handoff"),
             coder_output=data.get("coder_output"),
             review_result=review_result,
             retry_count=data.get("retry_count", 0),

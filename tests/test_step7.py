@@ -446,6 +446,53 @@ class TestRetryLogic:
         assert [f.path for f in code_changes.files] == ["src/a.ts", "src/b.ts"]
         assert task.status == TaskStatus.DONE
 
+    def test_orchestrator_passes_analysis_handoff_to_coder(self) -> None:
+        """编码阶段应优先使用精简 analysis_handoff，而非完整 analysis_cache。"""
+        planner, _, _, _ = _make_mock_agents()
+
+        analyst = MagicMock(spec=Analyst)
+        analyst.execute.return_value = (
+            '{"interfaces": [{"name": "IPlayerModel", "methods": ["load(): void"], "file": "src/model/IPlayerModel.ts"}], '
+            '"files": [{"path": "src/model/PlayerModel.ts", "action": "modify", "purpose": "补齐实现"}], '
+            '"gaps": ["缺少 PlayerModel 实现"], '
+            '"artifactChecks": [{"name": "PlayerModel 注册", "status": "missing", "impact": "无法注入"}], '
+            '"executionAlerts": [{"level": "blocking", "message": "需要补齐注册", "action": "更新 service locator"}], '
+            '"dataModels": [{"name": "PlayerState", "fields": ["hp: number"], "sourceRef": "ref.ts:10"}]}'
+        )
+
+        coder = MagicMock(spec=Coder)
+        coder.execute.return_value = CodeChanges(files=[])
+
+        reviewer = MagicMock(spec=Reviewer)
+        reviewer.execute.return_value = ReviewResult(passed=True)
+
+        task = Task(id="T0", title="Test", description="desc")
+        ctx = _make_context([task], dry_run=False)
+
+        orch = Orchestrator(
+            config=ctx.config,
+            planner=planner,
+            analyst=analyst,
+            coder=coder,
+            reviewer=reviewer,
+            context=ctx,
+        )
+        orch._state_store = StateStore(Path(tempfile.mktemp(suffix=".json")))
+        orch._file_service = MagicMock()
+        orch._git = MagicMock()
+        orch._git.has_changes.return_value = False
+
+        orch.run_single_task(task)
+
+        _, kwargs = coder.execute.call_args
+        handoff = kwargs.get("analysis_report", "")
+        assert task.analysis_handoff is not None
+        assert handoff == task.analysis_handoff
+        assert "## 建议修改文件" in handoff
+        assert "## 执行提醒" in handoff
+        assert "PlayerState" in handoff
+        assert "subtasks" not in handoff
+
 
 class TestBreakpointResume:
     """断点恢复测试"""

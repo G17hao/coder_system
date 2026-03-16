@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 _RETRY_FUSE_THRESHOLD = 3
 _NO_READY_AUTO_RETRY_LIMIT = 20
 _NO_READY_SLEEP_SEC = 30
+_ANALYSIS_HANDOFF_MAX_ITEMS = 8
+_ANALYSIS_HANDOFF_MAX_CHARS = 8_000
 
 
 class Orchestrator:
@@ -346,9 +348,11 @@ class Orchestrator:
                     )
                     self._save_conversation()
                     task.analysis_cache = report
+                    task.analysis_handoff = self._build_analysis_handoff(report)
                     self._sync_llm_usage()
                 else:
                     task.analysis_cache = '{"dry_run": true}'
+                    task.analysis_handoff = '{"dry_run": true}'
 
             # 4.1 分析阶段可拆解子任务：写入队列并优先执行
             generated_subtasks = self._create_subtasks_from_analysis(task)
@@ -367,11 +371,13 @@ class Orchestrator:
                     # 5. 编码阶段
                     logger.info(f"  [编码] 编码中... (尝试 {task.retry_count + 1}/{task.max_retries})")
                     if not self._config.dry_run:
+                        if not task.analysis_handoff:
+                            task.analysis_handoff = self._build_analysis_handoff(task.analysis_cache or "")
                         conv_log = self._start_conversation(task, "coder")
                         changes = self._coder.execute(
                             task,
                             self._context,
-                            analysis_report=task.analysis_cache or "",
+                            analysis_report=task.analysis_handoff or task.analysis_cache or "",
                             conversation_log=conv_log,
                         )
                         self._save_conversation()
@@ -785,6 +791,127 @@ class Orchestrator:
             except Exception:
                 continue
         return None
+
+    @staticmethod
+    def _truncate_text(text: str, max_chars: int) -> str:
+        if max_chars <= 0:
+            return ""
+        if len(text) <= max_chars:
+            return text
+        if max_chars <= 32:
+            return text[:max_chars]
+        head = max_chars // 2
+        tail = max_chars - head - 19
+        return text[:head] + "\n...[已截断]...\n" + text[-max(0, tail):]
+
+    def _build_analysis_handoff(self, analysis_text: str) -> str:
+        """构建给 Coder 的精简交接上下文，避免直接透传完整分析报告。"""
+        if not analysis_text:
+            return ""
+
+        analysis_data = self._parse_analysis_json(analysis_text)
+        if not analysis_data:
+            return self._truncate_text(analysis_text, _ANALYSIS_HANDOFF_MAX_CHARS)
+
+        def _collect_named_items(items: Any, *, name_key: str = "name", extra_key: str | None = None) -> list[str]:
+            if not isinstance(items, list):
+                return []
+            lines: list[str] = []
+            for item in items[:_ANALYSIS_HANDOFF_MAX_ITEMS]:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get(name_key, "")).strip()
+                file_path = str(item.get("file", "")).strip()
+                purpose = str(item.get(extra_key, "")).strip() if extra_key else ""
+                parts = [part for part in [name, file_path, purpose] if part]
+                if parts:
+                    lines.append(" | ".join(parts))
+            return lines
+
+        def _collect_text_items(items: Any) -> list[str]:
+            if not isinstance(items, list):
+                return []
+            return [
+                str(item).strip()
+                for item in items[:_ANALYSIS_HANDOFF_MAX_ITEMS]
+                if str(item).strip()
+            ]
+
+        sections: list[str] = []
+
+        files = self._extract_key_files(analysis_data)
+        if files:
+            sections.append("## 建议修改文件\n" + "\n".join(f"- {path}" for path in files[:_ANALYSIS_HANDOFF_MAX_ITEMS]))
+
+        interfaces = _collect_named_items(analysis_data.get("interfaces"), extra_key="methods")
+        if interfaces:
+            sections.append("## 关键接口\n" + "\n".join(f"- {item}" for item in interfaces))
+
+        models = _collect_named_items(analysis_data.get("dataModels"), extra_key="fields")
+        if models:
+            sections.append("## 关键数据模型\n" + "\n".join(f"- {item}" for item in models))
+
+        deps = _collect_text_items(analysis_data.get("dependencies"))
+        if deps:
+            sections.append("## 依赖约束\n" + "\n".join(f"- {item}" for item in deps))
+
+        gaps = _collect_text_items(analysis_data.get("gaps"))
+        if gaps:
+            sections.append("## 主要缺口\n" + "\n".join(f"- {item}" for item in gaps))
+
+        artifact_checks = analysis_data.get("artifactChecks", [])
+        if isinstance(artifact_checks, list):
+            artifact_lines: list[str] = []
+            for item in artifact_checks[:_ANALYSIS_HANDOFF_MAX_ITEMS]:
+                if not isinstance(item, dict):
+                    continue
+                status = str(item.get("status", "")).strip()
+                if status == "present":
+                    continue
+                name = str(item.get("name", "")).strip()
+                impact = str(item.get("impact", "")).strip()
+                evidence = str(item.get("evidence", "")).strip()
+                parts = [part for part in [name, status, impact or evidence] if part]
+                if parts:
+                    artifact_lines.append(" | ".join(parts))
+            if artifact_lines:
+                sections.append("## 风险产物检查\n" + "\n".join(f"- {item}" for item in artifact_lines))
+
+        alerts = analysis_data.get("executionAlerts", [])
+        if isinstance(alerts, list):
+            alert_lines: list[str] = []
+            for item in alerts[:_ANALYSIS_HANDOFF_MAX_ITEMS]:
+                if not isinstance(item, dict):
+                    continue
+                level = str(item.get("level", "")).strip()
+                message = str(item.get("message", "")).strip()
+                action = str(item.get("action", "")).strip()
+                if not any([level, message, action]):
+                    continue
+                alert_lines.append(" | ".join(part for part in [level, message, action] if part))
+            if alert_lines:
+                sections.append("## 执行提醒\n" + "\n".join(f"- {item}" for item in alert_lines))
+
+        mcp_recommendation = analysis_data.get("mcpRecommendation")
+        if isinstance(mcp_recommendation, dict) and mcp_recommendation.get("needed"):
+            reason = str(mcp_recommendation.get("reason", "")).strip()
+            suggested_tools = mcp_recommendation.get("suggestedTools", [])
+            tools_text = ", ".join(
+                str(item).strip() for item in suggested_tools[:_ANALYSIS_HANDOFF_MAX_ITEMS] if str(item).strip()
+            )
+            lines = []
+            if reason:
+                lines.append(f"- 原因: {reason}")
+            if tools_text:
+                lines.append(f"- 建议工具: {tools_text}")
+            if lines:
+                sections.append("## MCP 建议\n" + "\n".join(lines))
+
+        if not sections:
+            return self._truncate_text(analysis_text, _ANALYSIS_HANDOFF_MAX_CHARS)
+
+        handoff = "\n\n".join(sections)
+        return self._truncate_text(handoff, _ANALYSIS_HANDOFF_MAX_CHARS)
 
     def _extract_key_files(self, analysis_data: dict[str, Any]) -> list[str]:
         files = analysis_data.get("files", [])

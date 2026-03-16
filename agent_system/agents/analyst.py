@@ -16,6 +16,9 @@ from agent_system.tools.list_directory import LIST_DIRECTORY_TOOL_DEFINITION
 from agent_system.tools.project_structure import GET_PROJECT_STRUCTURE_TOOL_DEFINITION
 
 
+_COMPLETED_TASK_PROMPT_LIMIT = 20
+
+
 class AnalystToolExecutor:
     """Analyst 可用的工具执行器"""
 
@@ -262,7 +265,8 @@ class Analyst(BaseAgent):
         if not context.completed_tasks:
             return ""
         lines: list[str] = []
-        for task_id, task in sorted(context.completed_tasks.items()):
+        recent_tasks = list(context.completed_tasks.values())[-_COMPLETED_TASK_PROMPT_LIMIT:]
+        for task in recent_tasks:
             lines.append(f"- [{task.id}] {task.title}: {task.description[:80]}")
         return "\n".join(lines)
 

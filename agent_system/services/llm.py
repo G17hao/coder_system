@@ -59,6 +59,7 @@ class TokenUsage:
 _THINK_RE = re.compile(r"<think>[\s\S]*?</think>", re.DOTALL)
 # 匹配未闭合的 <think>... 片段（流式场景中最后一块可能未关闭）
 _THINK_OPEN_RE = re.compile(r"<think>[\s\S]*$", re.DOTALL)
+_INPUT_LENGTH_LIMIT_RE = re.compile(r"Range of input length should be \[\d+,\s*(\d+)\]")
 
 
 def _strip_think_tags(text: str | None) -> str:
@@ -118,6 +119,18 @@ def _extract_api_status_error_detail(error: anthropic.APIStatusError) -> str:
     if len(detail) > max_len:
         return detail[:max_len] + "..."
     return detail
+
+
+def _extract_input_length_limit(error: Exception) -> int | None:
+    """从供应商报错中提取允许的最大输入长度。"""
+    match = _INPUT_LENGTH_LIMIT_RE.search(str(error))
+    if not match:
+        return None
+
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
 
 
 def _estimate_request_payload(
@@ -424,51 +437,56 @@ class LLMService:
         Returns:
             LLMResponse 包含内容、工具调用和 token 统计
         """
-        fitted_messages, payload, was_trimmed = _fit_messages_to_payload(
-            system_prompt,
-            messages,
-            tools,
-        )
-        if was_trimmed:
-            logger.warning(
-                f"    {f'[{label}]' if label else '[LLM]'} 请求体过大，已自动裁剪上下文 | "
-                f"payload≈{payload['payload_bytes']}B"
-            )
-
-        # 构建支持显式缓存的消息格式
         system_tokens = len(system_prompt) // 4  # 估算 token 数
         use_cache = enable_cache and system_tokens >= getattr(self, '_cache_min_tokens', 1024)
-        
-        if use_cache:
-            # DashScope 显式缓存格式：system 和 messages 都支持 cache_control
-            kwargs: dict[str, Any] = {
-                "model": self._model,
-                "max_tokens": self._max_tokens,
-                "temperature": self._temperature,
-                "system": [
-                    {
-                        "type": "text",
-                        "text": system_prompt,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-                "messages": fitted_messages,
-            }
-            logger.info(f"    {f'[{label}]' if label else '[LLM]'} 启用显式缓存 (system_prompt ≈ {system_tokens} tokens)")
-        else:
-            kwargs = {
-                "model": self._model,
-                "max_tokens": self._max_tokens,
-                "temperature": self._temperature,
-                "system": system_prompt,
-                "messages": fitted_messages,
-            }
-        
-        if tools:
-            kwargs["tools"] = tools
-
-        # 请求前日志：帮助定位请求体过大/参数异常问题
         tag = f"[{label}]" if label else "[LLM]"
+
+        def _prepare_request(max_bytes: int) -> tuple[list[dict[str, Any]], dict[str, int], dict[str, Any], bool]:
+            fitted_messages, payload, was_trimmed = _fit_messages_to_payload(
+                system_prompt,
+                messages,
+                tools,
+                max_bytes=max_bytes,
+            )
+            if was_trimmed:
+                logger.warning(
+                    f"    {tag} 请求体过大，已自动裁剪上下文 | payload≈{payload['payload_bytes']}B | limit={max_bytes}B"
+                )
+
+            if use_cache:
+                request_kwargs: dict[str, Any] = {
+                    "model": self._model,
+                    "max_tokens": self._max_tokens,
+                    "temperature": self._temperature,
+                    "system": [
+                        {
+                            "type": "text",
+                            "text": system_prompt,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                    "messages": fitted_messages,
+                }
+            else:
+                request_kwargs = {
+                    "model": self._model,
+                    "max_tokens": self._max_tokens,
+                    "temperature": self._temperature,
+                    "system": system_prompt,
+                    "messages": fitted_messages,
+                }
+
+            if tools:
+                request_kwargs["tools"] = tools
+
+            return fitted_messages, payload, request_kwargs, was_trimmed
+
+        request_max_bytes = max(1024, int(getattr(self, '_request_max_bytes', _MAX_REQUEST_BYTES)))
+        fitted_messages, payload, kwargs, _ = _prepare_request(request_max_bytes)
+
+        if use_cache:
+            logger.info(f"    {tag} 启用显式缓存 (system_prompt ≈ {system_tokens} tokens)")
+
         logger.info(
             f"    {tag} 请求体 | msgs={payload['message_count']} | "
             f"msg_chars={payload['message_chars']} | system_chars={payload['system_chars']} | "
@@ -476,8 +494,30 @@ class LLMService:
             f"payload≈{payload['payload_bytes']}B"
         )
 
-        # 带重试的 API 调用
-        response = self._call_with_retry(label=label, **kwargs)
+        try:
+            response = self._call_with_retry(label=label, **kwargs)
+        except Exception as error:
+            provider_limit = _extract_input_length_limit(error)
+            if provider_limit is None:
+                raise
+
+            fallback_limit = max(1024, min(provider_limit - 4096, int(provider_limit * 0.95)))
+            if fallback_limit >= request_max_bytes:
+                raise
+
+            logger.warning(
+                f"    {tag} 供应商拒绝当前输入长度，自动收紧请求体限制后重试 | "
+                f"provider_limit={provider_limit}B | retry_limit={fallback_limit}B"
+            )
+            self._request_max_bytes = fallback_limit
+            fitted_messages, payload, kwargs, _ = _prepare_request(fallback_limit)
+            logger.info(
+                f"    {tag} 重试请求体 | msgs={payload['message_count']} | "
+                f"msg_chars={payload['message_chars']} | system_chars={payload['system_chars']} | "
+                f"tools={payload['tool_count']} | tool_chars={payload['tool_schema_chars']} | "
+                f"payload≈{payload['payload_bytes']}B"
+            )
+            response = self._call_with_retry(label=label, **kwargs)
 
         # 提取文本内容（过滤 <think> 标签）
         text_parts: list[str] = []

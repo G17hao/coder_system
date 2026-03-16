@@ -22,6 +22,9 @@ from agent_system.tools.todo_list import TODO_LIST_TOOL_DEFINITION
 from agent_system.tools.run_command import RUN_COMMAND_TOOL_DEFINITION, run_command_tool
 
 
+_COMPLETED_TASK_PROMPT_LIMIT = 20
+
+
 @dataclass
 class FileChange:
     """单个文件变更"""
@@ -497,7 +500,8 @@ class Coder(BaseAgent):
         if context is None or not context.completed_tasks:
             return ""
         lines: list[str] = []
-        for task_id, task in sorted(context.completed_tasks.items()):
+        recent_tasks = list(context.completed_tasks.values())[-_COMPLETED_TASK_PROMPT_LIMIT:]
+        for task in recent_tasks:
             lines.append(f"- [{task.id}] {task.title}: {task.description[:80]}")
         return "\n".join(lines)
 
@@ -546,7 +550,7 @@ class Coder(BaseAgent):
             f"**ID**: {task.id}\n"
             f"**标题**: {task.title}\n"
             f"**描述**: {task.description}\n\n"
-            f"## 分析报告\n\n{analysis_report}\n\n"
+            f"## 分析交接\n\n{analysis_report}\n\n"
             f"## 项目根目录\n\n{context.project.project_root}\n"
             f"{retry_info}\n"
             f"## 要求\n\n"

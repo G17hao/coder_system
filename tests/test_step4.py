@@ -177,6 +177,28 @@ class TestAnalystAgent:
         assert "禁止继续创建子任务" in system_prompt
         assert "subtasks: 必须为空数组 []" in user_content
 
+    def test_analyst_completed_tasks_prompt_is_windowed(self) -> None:
+        """Analyst 只注入最近窗口内的已完成任务，避免 prompt 无界增长。"""
+        analyst = Analyst(llm=MagicMock())
+        config = ProjectConfig(
+            project_name="myproject",
+            project_description="desc",
+            project_root="/project/root",
+            reference_roots=["/ref1"],
+        )
+        ctx = AgentContext(project=config, config=AgentConfig())
+        ctx.completed_tasks = {
+            f"T{i}": Task(id=f"T{i}", title=f"Task {i}", description=f"desc {i}")
+            for i in range(25)
+        }
+
+        prompt = analyst._build_system_prompt(ctx)
+
+        assert "[T0]" not in prompt
+        assert "[T4]" not in prompt
+        assert "[T5]" in prompt
+        assert "[T24]" in prompt
+
 
 class TestCoderToolExecutorTracking:
     """CoderToolExecutor 文件写入跟踪测试"""

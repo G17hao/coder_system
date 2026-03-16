@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from agent_system.services.conversation_logger import ConversationLog
@@ -9,6 +10,10 @@ from agent_system.services.conversation_logger import ConversationLog
 
 class _FakeConnError(Exception):
     """用于替代 anthropic.APIConnectionError 的测试异常"""
+
+
+class _FakeStatusError(Exception):
+    """用于模拟供应商返回的请求体过大错误"""
 
 
 class _FakeStream:
@@ -141,6 +146,68 @@ def test_estimate_request_payload_contains_size_metrics() -> None:
     assert payload["tool_count"] == 1
     assert payload["message_chars"] >= 10
     assert payload["payload_bytes"] > 0
+
+
+def test_extract_input_length_limit_reads_provider_limit() -> None:
+    """应能从供应商 400 错误中提取最大输入长度。"""
+    from agent_system.services.llm import _extract_input_length_limit
+
+    error = _FakeStatusError(
+        "Error code: 400 - {'error': {'message': '<400> InternalError.Algo.InvalidParameter: "
+        "Range of input length should be [1, 983616]'}}"
+    )
+
+    assert _extract_input_length_limit(error) == 983616
+
+
+def test_call_retries_with_smaller_payload_after_provider_limit_error(monkeypatch) -> None:
+    """供应商报输入长度超限时，应自动收紧请求体上限并重试。"""
+    from agent_system.services.llm import LLMService, TokenUsage
+
+    service = object.__new__(LLMService)
+    service._model = "test-model"
+    service._max_tokens = 1024
+    service._temperature = 0.0
+    service._usage = TokenUsage()
+    service._timeout = 30.0
+    service._max_retries = 0
+    service._request_max_bytes = 5_500_000
+
+    call_payload_sizes: list[int] = []
+    response = SimpleNamespace(
+        content=[],
+        usage=SimpleNamespace(input_tokens=1, output_tokens=2),
+        stop_reason="",
+    )
+
+    def _fake_call_with_retry(label: str = "", **kwargs):
+        payload_size = len(json.dumps({
+            "system": kwargs.get("system"),
+            "messages": kwargs.get("messages"),
+            "tools": kwargs.get("tools", []),
+        }, ensure_ascii=False).encode("utf-8"))
+        call_payload_sizes.append(payload_size)
+        if len(call_payload_sizes) == 1:
+            raise _FakeStatusError(
+                "Error code: 400 - {'error': {'message': '<400> InternalError.Algo.InvalidParameter: "
+                "Range of input length should be [1, 983616]'}}"
+            )
+        return response
+
+    service._call_with_retry = _fake_call_with_retry  # type: ignore[method-assign]
+
+    result = service.call(
+        system_prompt="review prompt",
+        messages=[{"role": "user", "content": "X" * 1_200_000}],
+        tools=None,
+        enable_cache=False,
+    )
+
+    assert result.input_tokens == 1
+    assert len(call_payload_sizes) == 2
+    assert call_payload_sizes[0] > 983_616
+    assert call_payload_sizes[1] < call_payload_sizes[0]
+    assert service._request_max_bytes < 983_616
 
 
 def test_tools_loop_done_reflection_triggers_finalization(monkeypatch) -> None:

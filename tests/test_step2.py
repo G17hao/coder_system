@@ -49,6 +49,7 @@ class TestTaskSerialization:
             title="reviewed task",
             description="desc",
             status=TaskStatus.DONE,
+            analysis_handoff="精简交接内容",
             review_result=ReviewResult(
                 passed=True,
                 issues=[],
@@ -59,6 +60,7 @@ class TestTaskSerialization:
         json_str = task.to_json()
         restored = Task.from_json(json_str)
         assert restored.review_result is not None
+        assert restored.analysis_handoff == "精简交接内容"
         assert restored.review_result.passed is True
         assert restored.review_result.suggestions == ["good job"]
         assert restored.commit_hash == "abc123"

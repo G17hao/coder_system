@@ -158,3 +158,21 @@ class TestCoderAgent:
         assert len(changes.files) > 0
         assert all(f.path for f in changes.files)
         assert all(f.action in ("create", "modify", "delete") for f in changes.files)
+
+    def test_coder_completed_tasks_prompt_is_windowed(self) -> None:
+        """Coder 只注入最近窗口内的已完成任务，避免长期上下文不断膨胀。"""
+        mock_llm = MagicMock()
+        coder = Coder(llm=mock_llm)
+        config = self._make_config()
+        ctx = AgentContext(project=config, config=AgentConfig())
+        ctx.completed_tasks = {
+            f"T{i}": Task(id=f"T{i}", title=f"Task {i}", description=f"desc {i}")
+            for i in range(25)
+        }
+
+        prompt = coder.build_system_prompt(config, context=ctx)
+
+        assert "[T0]" not in prompt
+        assert "[T4]" not in prompt
+        assert "[T5]" in prompt
+        assert "[T24]" in prompt
